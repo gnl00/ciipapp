@@ -29,6 +29,12 @@ function createBridge(parent = {}) {
   return {call:window.mygo.call, messages};
 }
 
+test('element capture has an unbound shortcut and does not simulate native selection', async () => {
+  const {call} = createBridge();
+  assert.equal((await call('CaptureService.GetPreferences')).shortcuts.element, '');
+  await assert.rejects(call('CaptureService.Capture', 'element'), /原生应用/);
+});
+
 test('copy and save receipts report PNG source dimensions rather than viewport dimensions', async () => {
   const {call, messages} = createBridge();
   await call('CaptureService.CopyImage', pngHeader(6000, 4000));

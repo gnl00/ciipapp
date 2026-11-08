@@ -38,7 +38,7 @@
   --pin-toolbar-border:#ffffff26;--pin-toolbar-shadow:0 4px 16px #111c1730,inset 0 1px 0 #ffffff0b;
   --pin-toolbar-filter:blur(20px) saturate(1.12);--pin-toolbar-hover:#ffffff12;--pin-toolbar-active:#ffffff20;
   --pin-close-ink:#edaaa1;--pin-close-hover:#ffd0c8;--pin-close-hover-bg:#dc695c26;--pin-close-active-bg:#dc695c38;--pin-focus:#bfd0c2;
-  --motion-panel-in:170ms;--motion-panel-out:110ms;--motion-feedback:120ms;--motion-pin-toolbar:140ms;
+  --motion-panel-in:170ms;--motion-panel-out:110ms;--motion-feedback:120ms;--motion-pin-toolbar:140ms;--motion-capture-selection:120ms;
   --ease-panel:cubic-bezier(.16,1,.3,1);--ease-exit:cubic-bezier(.2,0,.2,1);--ease-pin-toolbar:cubic-bezier(.2,.8,.2,1);
 }
 @media(prefers-reduced-transparency:reduce){
@@ -47,5 +47,5 @@
     --material-filter:none;--material-toolbar-filter:none;--close-bg:#f8faf5;--close-filter:none;
     --pin-toolbar-bg:var(--pin-toolbar-solid);--pin-toolbar-filter:none;--scrim-filter:none;}
 }
-@media(prefers-reduced-motion:reduce){:root{--motion-panel-in:0ms;--motion-panel-out:0ms;--motion-feedback:0ms;--motion-pin-toolbar:0ms}}
+@media(prefers-reduced-motion:reduce){:root{--motion-panel-in:0ms;--motion-panel-out:0ms;--motion-feedback:0ms;--motion-pin-toolbar:0ms;--motion-capture-selection:0ms}}
 @media(prefers-contrast:more){:root{--muted:var(--text-secondary);--line:rgba(48,57,59,.28);--material-outline:rgba(54,73,64,.35);--line-control:rgba(65,89,74,.4)}}

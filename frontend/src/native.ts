@@ -1,7 +1,7 @@
 import type {Rect,CaptureImage,ScreenRect,QuickPlacement} from './types.ts';
 export type {CaptureImage,ScreenRect,QuickPlacement} from './types.ts';
 
-export type ShortcutAction = 'area' | 'window' | 'screen' | 'pin';
+export type ShortcutAction = 'area' | 'window' | 'element' | 'screen' | 'pin';
 export type ShortcutBindings = Record<ShortcutAction,string>;
 export type ShortcutStatus = Partial<Record<ShortcutAction,{display:string;error?:string}>>;
 export interface Preferences {

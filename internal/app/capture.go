@@ -88,6 +88,9 @@ func (s *CaptureService) Capture(ctx context.Context, mode string) (*ImageData, 
 	if s.hasQuickEditor() {
 		return nil, errors.New("请先完成当前快捷编辑，或按 Esc 关闭后重新截图")
 	}
+	if mode == "element" && !nativeElementPermission() {
+		return nil, errors.New("元素截图需要辅助功能权限，请在系统设置 → 隐私与安全性 → 辅助功能中允许 ciip 后重试")
+	}
 	dir, err := os.MkdirTemp("", "ciip-capture-")
 	if err != nil {
 		return nil, err
@@ -111,6 +114,24 @@ func (s *CaptureService) Capture(ctx context.Context, mode string) (*ImageData, 
 		return nil, ctx.Err()
 	case <-time.After(180 * time.Millisecond):
 	}
+	var selection *captureSelection
+	if mode == "window" || mode == "element" {
+		selection, err = selectNativeCapture(ctx, mode)
+		if err != nil || selection == nil {
+			return nil, err
+		}
+		selectedArgs, selectionErr := selection.arguments(mode)
+		if selectionErr != nil {
+			return nil, selectionErr
+		}
+		args = append(args, selectedArgs...)
+		// Let the selection panels leave the compositor before taking the image.
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(180 * time.Millisecond):
+		}
+	}
 	args = append(args, path)
 	var stderr bytes.Buffer
 	cmd := exec.CommandContext(ctx, "/usr/sbin/screencapture", args...)
@@ -120,7 +141,7 @@ func (s *CaptureService) Capture(ctx context.Context, mode string) (*ImageData, 
 		return nil, ctx.Err()
 	}
 	data, readErr := readImageFile(path)
-	if captureCanceled(runErr, readErr, stderr.String(), mode != "screen") {
+	if captureCanceled(runErr, readErr, stderr.String(), mode == "area") {
 		return nil, nil
 	}
 	if runErr != nil {
@@ -141,7 +162,11 @@ func (s *CaptureService) Capture(ctx context.Context, mode string) (*ImageData, 
 		return nil, fmt.Errorf("截图已完成，但复制到剪贴板失败：%w", err)
 	}
 	if s.preferenceSnapshot().CaptureMode == "quick" {
-		placement, placementErr := placeQuickImage(img.Width, img.Height, nativeCaptureRect(path), mygo.Screen.Displays(), mygo.Screen.CursorScreenPoint())
+		captureRect := nativeCaptureRect(path)
+		if selection != nil {
+			captureRect = &selection.Rect
+		}
+		placement, placementErr := placeQuickImage(img.Width, img.Height, captureRect, mygo.Screen.Displays(), mygo.Screen.CursorScreenPoint())
 		if placementErr != nil {
 			return nil, placementErr
 		}
@@ -161,8 +186,8 @@ func captureArguments(mode string) ([]string, error) {
 	switch mode {
 	case "area":
 		return append(args, "-i", "-s"), nil
-	case "window":
-		return append(args, "-i", "-w", "-o"), nil
+	case "window", "element":
+		return args, nil // The native picker supplies a window ID or an element rect.
 	case "screen":
 		return append(args, "-m"), nil
 	default:

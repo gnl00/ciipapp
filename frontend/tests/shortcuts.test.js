@@ -25,7 +25,12 @@ test('duplicate assignments are blocked while clearing and keeping a key are all
   assert.equal(shortcutConflict(defaultShortcuts,'window',defaultShortcuts.area),'区域截图');
   assert.equal(shortcutConflict(defaultShortcuts,'area',defaultShortcuts.area),null);
   assert.equal(shortcutConflict(defaultShortcuts,'area',''),null);
-  assert.equal(new Set(Object.values(defaultShortcuts)).size,4);
+  assert.equal(new Set(Object.values(defaultShortcuts)).size,5);
   assert.notEqual(defaultShortcuts.window,'CmdOrCtrl+Shift+3');
   assert.notEqual(defaultShortcuts.screen,'CmdOrCtrl+Shift+4');
+});
+test('element capture starts unbound and participates in duplicate checks',()=>{
+  assert.equal(defaultShortcuts.element,'');
+  assert.equal(shortcutConflict(defaultShortcuts,'element',defaultShortcuts.window),'窗口截图');
+  assert.equal(shortcutConflict({...defaultShortcuts,element:'CmdOrCtrl+Alt+E'},'area','CmdOrCtrl+Alt+E'),'元素截图');
 });

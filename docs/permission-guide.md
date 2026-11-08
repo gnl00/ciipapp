@@ -1,5 +1,7 @@
 # macOS 截图权限引导
 
+元素截图另外需要辅助功能权限，仅在使用元素截图时由系统提示授权。此处的屏幕录制拖拽引导不申请该权限，详见[窗口与元素截图](capture-selection.md)。
+
 ## 问题与原因
 
 点击“打开系统设置”后，Settings 成为活跃应用是正常行为。原引导使用普通 `NSPanel`，没有覆盖 `hidesOnDeactivate`；AppKit 对面板的默认值是 `YES`。图标继承 `NSImageView`，也没有接受 inactive 窗口的 first mouse。两者组合使引导在失活时不可用，或第一次按下只激活来源窗口，拖动需要再次操作。

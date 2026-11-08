@@ -62,6 +62,26 @@ func TestOldPreferencesGainCaptureModeAndShortcutDefaults(t *testing.T) {
 	}
 }
 
+func TestElementShortcutIsOptInAndPersisted(t *testing.T) {
+	p := defaultPreferences()
+	if p.Shortcuts.Element != "" {
+		t.Fatal("element capture must not reserve another global shortcut by default")
+	}
+	p.Shortcuts.Element = p.Shortcuts.Window
+	if _, err := normalizedShortcuts(p.Shortcuts); err == nil {
+		t.Fatal("element shortcut bypassed duplicate validation")
+	}
+	p.Shortcuts.Element = "Cmd+Alt+E"
+	path := filepath.Join(t.TempDir(), "prefs.json")
+	if err := savePreferences(path, p); err != nil {
+		t.Fatal(err)
+	}
+	got, err := readPreferences(path)
+	if err != nil || got.Shortcuts.Element != "CmdOrCtrl+Alt+E" {
+		t.Fatalf("element shortcut did not persist: %+v, %v", got.Shortcuts, err)
+	}
+}
+
 type fakeShortcutBackend struct {
 	active                         map[string]func()
 	blocked                        map[string]bool

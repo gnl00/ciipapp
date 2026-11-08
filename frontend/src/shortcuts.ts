@@ -1,7 +1,7 @@
-export type ShortcutAction = 'area' | 'window' | 'screen' | 'pin';
+export type ShortcutAction = 'area' | 'window' | 'element' | 'screen' | 'pin';
 export type Shortcuts = Record<ShortcutAction, string>;
-export const shortcutActions: [ShortcutAction,string,string][]=[['area','区域截图','选择屏幕上的任意区域'],['window','窗口截图','点选一个窗口'],['screen','全屏截图','截取主显示器'],['pin','贴图','贴出当前正在编辑的截图']];
-export const defaultShortcuts={area:'CmdOrCtrl+Shift+2',window:'CmdOrCtrl+Alt+3',screen:'CmdOrCtrl+Alt+4',pin:'CmdOrCtrl+Shift+P'};
+export const shortcutActions: [ShortcutAction,string,string][]=[['area','区域截图','选择屏幕上的任意区域'],['window','窗口截图','点选一个窗口'],['element','元素截图','点选按钮、文本等屏幕元素，需辅助功能权限'],['screen','全屏截图','截取主显示器'],['pin','贴图','贴出当前正在编辑的截图']];
+export const defaultShortcuts={area:'CmdOrCtrl+Shift+2',window:'CmdOrCtrl+Alt+3',element:'',screen:'CmdOrCtrl+Alt+4',pin:'CmdOrCtrl+Shift+P'};
 
 export function shortcutFromEvent(event: Pick<KeyboardEvent, 'repeat' | 'key' | 'isComposing' | 'metaKey' | 'ctrlKey' | 'altKey' | 'shiftKey' | 'code'>) {
   if(event.repeat||['Meta','Control','Alt','Shift','CapsLock'].includes(event.key))return null;

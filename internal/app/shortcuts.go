@@ -11,10 +11,11 @@ import (
 )
 
 type ShortcutPreferences struct {
-	Area   string `json:"area"`
-	Window string `json:"window"`
-	Screen string `json:"screen"`
-	Pin    string `json:"pin"`
+	Area    string `json:"area"`
+	Window  string `json:"window"`
+	Element string `json:"element"`
+	Screen  string `json:"screen"`
+	Pin     string `json:"pin"`
 }
 
 type ShortcutStatus struct {
@@ -24,14 +25,14 @@ type ShortcutStatus struct {
 	Error       string `json:"error,omitempty"`
 }
 
-var shortcutActions = []string{"area", "window", "screen", "pin"}
-var shortcutNames = map[string]string{"area": "区域截图", "window": "窗口截图", "screen": "全屏截图", "pin": "贴图"}
+var shortcutActions = []string{"area", "window", "element", "screen", "pin"}
+var shortcutNames = map[string]string{"area": "区域截图", "window": "窗口截图", "element": "元素截图", "screen": "全屏截图", "pin": "贴图"}
 
 func defaultShortcuts() ShortcutPreferences {
 	return ShortcutPreferences{Area: "CmdOrCtrl+Shift+2", Window: "CmdOrCtrl+Alt+3", Screen: "CmdOrCtrl+Alt+4", Pin: "CmdOrCtrl+Shift+P"}
 }
 func (p ShortcutPreferences) values() map[string]string {
-	return map[string]string{"area": p.Area, "window": p.Window, "screen": p.Screen, "pin": p.Pin}
+	return map[string]string{"area": p.Area, "window": p.Window, "element": p.Element, "screen": p.Screen, "pin": p.Pin}
 }
 func normalizeShortcut(value string) (string, error) {
 	value = strings.TrimSpace(value)
@@ -108,7 +109,7 @@ func normalizedShortcuts(p ShortcutPreferences) (ShortcutPreferences, error) {
 		}
 		seen[value], values[action] = action, value
 	}
-	return ShortcutPreferences{Area: values["area"], Window: values["window"], Screen: values["screen"], Pin: values["pin"]}, nil
+	return ShortcutPreferences{Area: values["area"], Window: values["window"], Element: values["element"], Screen: values["screen"], Pin: values["pin"]}, nil
 }
 func shortcutDisplay(value string) string {
 	if value == "" {
@@ -280,7 +281,7 @@ func (s *CaptureService) initializeShortcuts() {
 		return
 	}
 	s.shortcuts = newShortcutRegistry(mygo.GlobalShortcut.Register, mygo.GlobalShortcut.Unregister, map[string]func(){
-		"area": func() { s.captureAndNotify("area") }, "window": func() { s.captureAndNotify("window") }, "screen": func() { s.captureAndNotify("screen") }, "pin": s.PinCurrent,
+		"area": func() { s.captureAndNotify("area") }, "window": func() { s.captureAndNotify("window") }, "element": func() { s.captureAndNotify("element") }, "screen": func() { s.captureAndNotify("screen") }, "pin": s.PinCurrent,
 	})
 	s.shortcuts.initialize(s.preferences.Shortcuts)
 }

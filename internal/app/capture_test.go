@@ -48,7 +48,7 @@ func TestCaptureArgumentsAndCancellation(t *testing.T) {
 	if _, err := captureArguments("area; rm -rf /"); err == nil {
 		t.Fatal("invalid mode accepted")
 	}
-	for _, mode := range []string{"area", "window", "screen"} {
+	for _, mode := range []string{"area", "window", "element", "screen"} {
 		if _, err := captureArguments(mode); err != nil {
 			t.Fatal(err)
 		}

@@ -24,8 +24,9 @@ const qaImage = {dataURL:fixture.toDataURL(), width:1280, height:720, name:'ciip
 let qaPreferences = structuredClone(window.parent.ciipPrototypePreferences || {
   openAtLogin:false, showEditorOnLaunch:true, menuBarVisible:true,
   menuBarStyle:'icon', menuBarIcon:'capture', ocrEngine:'vision', ocrMode:'accurate', captureMode:'quick',
-  shortcuts:{area:'CmdOrCtrl+Shift+2', window:'CmdOrCtrl+Alt+3', screen:'CmdOrCtrl+Alt+4', pin:'CmdOrCtrl+Shift+P'},
+  shortcuts:{area:'CmdOrCtrl+Shift+2', window:'CmdOrCtrl+Alt+3', element:'', screen:'CmdOrCtrl+Alt+4', pin:'CmdOrCtrl+Shift+P'},
 });
+qaPreferences.shortcuts.element ??= '';
 let nextPinID = 0;
 
 function shortcutStatus() {
@@ -72,6 +73,7 @@ window.mygo = {call:async (method, ...args) => {
   }
   if(name==='GetQuickBounds')return {x:0,y:0,width:innerWidth,height:innerHeight};
   if(name==='TransformQuickWindow')throw Error('窗口移动和边框缩放请在 ciip 原生应用中验证');
+  if (name === 'Capture') throw Error('窗口和元素选择、屏幕截图请在 ciip 原生应用中验证');
   if (name === 'QuickReady') return null;
   if (name === 'GetAppInfo') return {
     name:'ciip', version:'0.10.0', platform:'darwin', architecture:'arm64', screenPermission:false,

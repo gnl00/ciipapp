@@ -103,6 +103,7 @@ const paths:Record<string,string> = {
   dismiss:'m8 8 8 8M16 8l-8 8',
   close:'m6 6 12 12M18 6 6 18',
 
+  element:'M3 8V3h5m8 0h5v5M3 16v5h5m8 0h5v-5M8 8h8v8H8z',
   window:'M3 5h18v15H3zM3 9h18M6 7h.1M9 7h.1',screen:'M3 4h18v13H3zM8 21h8M12 17v4',image:'M3 4h18v16H3zM3 16l6-6 5 5 3-3 4 4M16 8h.1',
   appearance:'M4 4h16v16H4zM8 8h8v8H8z',highlighter:'m4 16 8-8 5 5-8 8H4zm7-9 3-3 7 7-3 3M3 21h9',ocr:'M8 3H3v5m13-5h5v5M3 16v5h5m8 0h5v-5M8 8h8M12 8v9',blur:'M7 5h.1M12 4h.1M17 5h.1M5 10h.1M10 10h.1M15 10h.1M20 10h.1M5 15h.1M10 15h.1M15 15h.1M20 15h.1M8 20h.1M14 20h.1',solid:'M4 4h16v16H4zM7 7h10v10H7zM10 10h4v4h-4z',
   capture:'M8 3H4a1 1 0 0 0-1 1v4m13-5h4a1 1 0 0 1 1 1v4M3 16v4a1 1 0 0 0 1 1h4m8 0h4a1 1 0 0 0 1-1v-4M8 8h8v8H8z',
@@ -804,10 +805,10 @@ window.addEventListener('ciip:redo',()=>undo(true));
 initializeAppearance();
 updateUI();
 function updateShortcutLabels(status:ShortcutStatus) {
- for(const [action,label]of ([['area','区域截图'],['window','窗口截图'],['screen','全屏截图']] as const)){
+ for(const [action,label]of ([['area','区域截图'],['window','窗口截图'],['element','元素截图'],['screen','全屏截图']] as const)){
   const button=document.querySelector<HTMLButtonElement>(`[data-capture=${action}]`);if(!button)continue;
-  let key=button.querySelector('kbd')!;if(!key){key=document.createElement('kbd');button.append(key);}key.textContent=status?.[action]?.display||'';
-  button.title=[label,status?.[action]?.display].filter(Boolean).join(' ');
+  let key=button.querySelector('kbd')!;if(!key){key=document.createElement('kbd');button.append(key);}const display=status?.[action]?.display;key.textContent=display==='未设置'?'':display||'';
+  button.title=[label,key.textContent].filter(Boolean).join(' ');
  }
  const area=status?.area?.display||'',pin=status?.pin?.display||'';
  $('capture').title=`区域截图 ${area}`.trim();$('start-capture').querySelector('kbd')!.textContent=area;
@@ -817,7 +818,7 @@ quickEditor=createQuickEditor({call,loadCapture,finishEditing:()=>{finishText();
  canCloseCanvas:event=>!!doc&&tool==='select'&&!textEdit&&!gesture&&![...doc!.annotations].reverse().some(a=>hitTest(a,pointer(event),6/scale))});
 if(native) call('GetStatus').then(async status=>{
  updateShortcutLabels(status.shortcuts);
- const unavailable=Object.entries(status.shortcuts||{}).filter(([,value])=>value.error).map(([name])=>({area:'区域截图',window:'窗口截图',screen:'全屏截图',pin:'贴图'})[name]);
+ const unavailable=Object.entries(status.shortcuts||{}).filter(([,value])=>value.error).map(([name])=>({area:'区域截图',window:'窗口截图',element:'元素截图',screen:'全屏截图',pin:'贴图'})[name]);
  if(unavailable.length)notify(`${unavailable.join('、')}快捷键注册失败，可在设置中更换`,true);
  if(isQuickMode)await quickEditor!.start();
 }).catch(error=>notify(errorMessage(error),true));

@@ -91,6 +91,7 @@ func Run() error {
 			{Label: "文件", Submenu: []*mygo.MenuItem{
 				{Label: "区域截图", Click: capture("area")},
 				{Label: "窗口截图", Click: capture("window")},
+				{Label: "元素截图", Click: capture("element")},
 				{Label: "全屏截图", Click: capture("screen")},
 				mygo.Separator(), {Label: "打开图片…", Click: openImage},
 				{Label: "保存图片…", Click: editAction("ciip:save")},

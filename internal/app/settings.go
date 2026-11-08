@@ -229,6 +229,7 @@ func (s *CaptureService) applyTray(p Preferences) error {
 	menu := mygo.NewMenu([]*mygo.MenuItem{
 		{Label: shortcutMenuLabel("区域截图", p.Shortcuts.Area), Click: func(*mygo.MenuItem, *mygo.Window) { go s.captureAndNotify("area") }},
 		{Label: shortcutMenuLabel("窗口截图", p.Shortcuts.Window), Click: func(*mygo.MenuItem, *mygo.Window) { go s.captureAndNotify("window") }},
+		{Label: shortcutMenuLabel("元素截图", p.Shortcuts.Element), Click: func(*mygo.MenuItem, *mygo.Window) { go s.captureAndNotify("element") }},
 		{Label: shortcutMenuLabel("全屏截图", p.Shortcuts.Screen), Click: func(*mygo.MenuItem, *mygo.Window) { go s.captureAndNotify("screen") }}, mygo.Separator(),
 		{Label: shortcutMenuLabel("贴图", p.Shortcuts.Pin), Click: func(*mygo.MenuItem, *mygo.Window) { go s.PinCurrent() }}, mygo.Separator(),
 		{Label: "打开编辑器", Click: func(*mygo.MenuItem, *mygo.Window) { go s.ShowEditor() }},
