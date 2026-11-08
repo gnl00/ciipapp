@@ -17,9 +17,27 @@
 - 保持文档 JSON、截图坐标与图片像素的语义；更改跨窗口编辑或贴图流程时，检查文档转移、取消、恢复和关闭路径。不要无意改变 bundle identifier 或偏好存储位置。
 - 普通关闭编辑器会收起窗口并保留文档；退出应用会丢失内存中的可编辑截图和贴图。修改生命周期时保留这一区别，不把关闭窗口当作退出应用。
 - 业务 TypeScript 放在 `frontend/src/`，`public/` 仅放静态资源；不要维护另一套 JS 业务源码供测试或原型使用。
-- 应用样式复用 `frontend/src/styles/tokens.css`，不要复制变量值建立第二套主题。UI 修改先读 [设计变量](docs/DESIGN-TOKENS.md)与[组件基线](docs/design-system.html)；官网修改先读 [官网设计](website/DESIGN.md)。保留键盘焦点及减少动态效果、减少透明度等系统偏好支持。
 - 修改权限引导时先读 [权限引导](docs/permission-guide.md)；修改菜单栏连字图标时先读 [菜单栏连字图标](docs/menubar-ligature.md)。
 - 构建缓存、安装包、第三方参考安装器和本机 QA 材料按 `.gitignore` 保留在本地，不随源码提交。
+
+## 共享设计变量（Design Tokens）
+
+应用的全局视觉约定以共享设计变量表达，包含颜色、字体、间距、圆角、控件尺寸、材质、阴影与动效。当前 `tokens.css` 声明 `color-scheme:light`，不是可切换的多主题系统。
+
+| 依据 | 作用 |
+| --- | --- |
+| [tokens.css](frontend/src/styles/tokens.css) | 应用设计变量的实际定义，数值与系统偏好覆盖以此为准 |
+| [设计变量说明](docs/DESIGN-TOKENS.md) | 变量语义、适用层级、材质依据及验收要求 |
+| [组件设计基线](docs/design-system.html) | 直接读取同一份 tokens 与应用样式，展示组件状态和材质效果 |
+| [官网设计](website/DESIGN.md)与[官网样式](website/src/styles/site.css) | 官网沿用产品视觉方向，但独立维护样式，当前不直接加载应用 tokens |
+
+- 修改 UI 前先查对应变量与使用位置，优先使用语义变量；共享视觉值在 `tokens.css` 修改，不在组件中复制一套值或用局部覆盖掩盖全局问题。仅局部布局和内容特有的颜色不必全部提升为全局变量。
+- 完整编辑器、快捷编辑器、设置和贴图共用应用 tokens，原型与组件基线也读取同一来源。新增或改变变量语义时，同步检查这些消费方，并更新相关说明和基线示例；不要只改文档中的数值。
+- 保持品牌色 `--accent` 与按钮填色 `--accent-fill` 的分工，文字使用相应层级变量；按钮文字对比度、键盘可见焦点及错误/状态的文字或图标提示应保留。
+- 完整编辑器用 `--surface-app` 提供稳定的不透明页面基底，快捷编辑和贴图保留透明页面。弹窗、对话框与工具栏使用各自材质变量，不用整层透明度代替背景材质；WebView 内模糊与跨窗口原生材质分别处理。
+- 保留 `prefers-reduced-motion`、`prefers-reduced-transparency` 和 `prefers-contrast` 的适配；JS 动效继续读取对应的时长与缓动变量，避免 CSS 与 JS 各自维护一套参数。
+- 贴图通过构建脚本输出 `tokens.css`，再由 Go 嵌入并内联到独立页面，不依赖相对 CSS 地址。修改接入方式时检查构建与模板契约。
+- 主题或材质改动按 [设计变量说明](docs/DESIGN-TOKENS.md)做原生 WebView 验收，覆盖完整/快捷编辑器、贴图、弹窗、设置与系统偏好。浏览器基线和 Node 测试用于辅助，不能单独证明原生材质效果。
 
 ## 开发与验证
 

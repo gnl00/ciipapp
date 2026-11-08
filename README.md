@@ -24,13 +24,13 @@
 
 ## 截图
 
+**编辑器主页面**：开始区域截图，或打开图片进行编辑。
+
+![ciip 编辑器主页面](resources/screenshots/editor-home.png)
+
 **快捷编辑**：截图后就地标注，常用工具随手可用。
 
 ![ciip 快捷编辑窗口与标注工具栏](resources/screenshots/quick-editor.png)
-
-**背景与圆角**：在完整编辑器中调整背景、留白与圆角。
-
-![ciip 完整编辑器中的背景与圆角面板](resources/screenshots/background-editor.png)
 
 **置顶贴图**：将图片留在手边，支持缩放、复制与再次编辑。
 
