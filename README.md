@@ -5,7 +5,6 @@
   <p>
     <a href="https://github.com/gnl00/ciipapp/releases/latest"><img src="https://img.shields.io/github/v/release/gnl00/ciipapp?color=cc582e" alt="GitHub 最新正式 Release 版本"></a>
   </p>
-  <p>macOS · Apple Silicon (ARM64) · Intel (x86_64)</p>
   <p>
     <a href="https://gnl00.github.io/ciipapp/">官网</a> ·
     <a href="https://github.com/gnl00/ciipapp/releases/latest">最新版本</a> ·
@@ -23,6 +22,20 @@
 - Apple Vision 和本机 Tesseract 离线文字识别、划选文字复制。
 - 菜单栏、全局快捷键及启动偏好设置。
 
+## 截图
+
+**快捷编辑**：截图后就地标注，常用工具随手可用。
+
+![ciip 快捷编辑窗口与标注工具栏](resources/screenshots/quick-editor.png)
+
+**背景与圆角**：在完整编辑器中调整背景、留白与圆角。
+
+![ciip 完整编辑器中的背景与圆角面板](resources/screenshots/background-editor.png)
+
+**置顶贴图**：将图片留在手边，支持缩放、复制与再次编辑。
+
+![ciip 贴图窗口与缩放、编辑、复制工具栏](resources/screenshots/pinned-image.png)
+
 ## 安装
 
 在 [最新版本](https://github.com/gnl00/ciipapp/releases/latest) 选择对应芯片的 DMG 或 ZIP：Apple Silicon 使用 `arm64`，Intel Mac 使用 `x86_64`。打开 DMG 后将 ciip.app 拖到 Applications，或解压 ZIP。
@@ -35,13 +48,10 @@ Apple Vision 使用系统内置引擎；选择 Tesseract 时需在本机安装 T
 
 需要 macOS 原生构建环境、Node.js 24 与 Go 1.27.3。MyGo 版本由 `go.mod` 固定。
 
-官网开发与构建还需要可用的 GitHub CLI（`gh`），用于读取最新正式 Release 的安装包地址；本机可通过 `gh auth login` 登录，GitHub Actions 使用工作流令牌。
-
 ```sh
 npm ci
 npm run dev:app       # 应用前端，原生功能需桌面进程提供
 npm run dev:prototype # 可操作演示，使用模拟接口
-npm run dev:website   # 独立官网
 ```
 
 按需选择开发入口。完整检查及应用构建：
@@ -55,7 +65,7 @@ CGO_ENABLED=1 go vet ./...
 ./build.sh
 ```
 
-`build.sh` 默认使用本机架构，生成 `build/darwin-arm64/ciip.app` 或 `build/darwin-amd64/ciip.app`；`CIIP_ARCH` 可指定目标。Go embed 需要先生成 `frontend/dist`。原生测试须在正常 macOS 登录会话中运行。
+`build.sh` 默认使用本机架构，生成 `build/darwin-arm64/ciip.app` 或 `build/darwin-amd64/ciip.app`；`CIIP_ARCH` 可指定目标。Go embed 需要先生成 `frontend/dist`。
 
 ## 项目结构
 
@@ -68,15 +78,6 @@ CGO_ENABLED=1 go vet ./...
 
 前端与官网按独立构建边界放在根目录，Go 应用只嵌入前端生产资源。构建缓存、安装包和本机 QA 材料不随源码提交。
 
-## 文档与发布
+## 相关文档
 
 - [项目架构](docs/ARCHITECTURE.md)
-- [设计变量](docs/DESIGN-TOKENS.md)与[组件设计基线](docs/design-system.html)
-- [官网设计](website/DESIGN.md)与[GitHub Pages 部署](docs/WEBSITE.md)
-- [权限引导](docs/permission-guide.md)
-- [菜单栏连字图标](docs/menubar-ligature.md)
-- [版本发布流程](docs/RELEASING.md)
-
-推送 `vX.Y.Z` 标签触发 GitHub Actions，分别在原生 ARM 和 Intel runner 构建 DMG、ZIP；四个文件完整且校验通过后发布 Release 和 SHA256SUMS。标签、应用元数据、npm 及运行时版本必须一致。
-
-普通关闭窗口会收起编辑器；退出应用会清除内存中的可编辑截图与贴图，退出前请保存需要保留的图片。
