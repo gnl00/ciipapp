@@ -19,7 +19,7 @@ git tag -a v0.10.1 -m "ciip v0.10.1"
 git push origin v0.10.1
 ```
 
-上面是后续发布命令；本次实现工作流时不自动执行。GitHub 仓库需要启用 Actions，并允许发布 job 的 `GITHUB_TOKEN` 拥有 `contents: write`。构建 job 只具有读取权限，不需要个人访问令牌。
+GitHub 仓库需要启用 Actions，并允许发布 job 的 `GITHUB_TOKEN` 拥有 `contents: write`。构建 job 只具有读取权限，不需要个人访问令牌。
 
 ## 双架构构建与产物
 
@@ -63,3 +63,11 @@ DMG 内有 `ciip.app` 和指向 Applications 的快捷方式；ZIP 是同一应�
 Runner 名称以 [GitHub hosted runners 文档](https://docs.github.com/en/actions/reference/runners/github-hosted-runners)及 [runner images 清单](https://github.com/actions/runner-images/blob/main/README.md)为依据。固定的官方 action 提交取自各仓库发行标签；发布使用 [`gh release create`](https://cli.github.com/manual/gh_release_create)、[`upload`](https://cli.github.com/manual/gh_release_upload) 和 [`edit`](https://cli.github.com/manual/gh_release_edit)。更换 runner 或 actions 时应重新验证工具链与架构。
 
 `node --test scripts/release.test.mjs` 使用临时文件和模拟 GitHub CLI，验证版本不匹配、缺失架构、校验和、上传中断、草稿重试、已发布幂等及 Latest 策略；不会创建远程 Release。工作流需要在真实标签 push 后才能证明 GitHub 原生 Intel/ARM runner 和线上上传通过。首次公开发布前建议分别在两种 Mac 上安装并做截图、贴图、权限引导验收。
+
+## v0.10.1 首发验证
+
+2026-11-08，`v0.10.1` 指向 `b855809626fd68893184ab80fcdb0d7506135525`；[发布运行](https://github.com/gnl00/ciipapp/actions/runs/42456865442)的版本预检、Intel、ARM 和发布 job 全部成功。[正式 Release](https://github.com/gnl00/ciipapp/releases/tag/v0.10.1)已公开，包含上述四个安装包及 SHA256SUMS。
+
+两个 runner 分别报告 `go1.27.3 darwin/amd64` 和 `go1.27.3 darwin/arm64`，原生架构检查、npm/Go 测试、vet、应用构建和打包均通过。发布后重新下载全部文件：SHA256SUMS 与 GitHub asset digest 均匹配；两份 ZIP 解包后的版本均为 0.10.1，Mach-O 分别为 x86_64 与 arm64，strict codesign 通过；两份 DMG 完整性验证通过。
+
+这次验证覆盖源码到公开下载的发布链路，没有执行安装包或更改系统权限；两种芯片的实际下载安装、截图及贴图操作仍需实机验收。签名仍为 ad hoc，未做 Apple 公证。

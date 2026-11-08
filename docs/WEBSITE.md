@@ -2,7 +2,7 @@
 
 ## 仓库与站点地址
 
-项目使用现有账号下的[gnl00/ciipapp](https://github.com/gnl00/ciipapp)仓库，GitHub Pages项目站点地址为[https://gnl00.github.io/ciipapp/](https://gnl00.github.io/ciipapp/)。地址在启用Pages并完成首次部署后生效。
+项目使用现有账号下的[gnl00/ciipapp](https://github.com/gnl00/ciipapp)仓库，GitHub Pages项目站点为[https://gnl00.github.io/ciipapp/](https://gnl00.github.io/ciipapp/)，已启用GitHub Actions部署。
 
 [GitHub规则](https://docs.github.com/en/pages/getting-started-with-github-pages/what-is-github-pages)：一个账号/组织最多一个用户/组织站点，每个仓库都可以有一个项目站点。
 
@@ -49,10 +49,10 @@ npm run preview -w @ciip/website
 
 默认下载入口为[GitHub Releases列表](https://github.com/gnl00/ciipapp/releases)。下载区只保留发布按钮、芯片版本说明与源码链接。这里使用`/releases`而非尚无版本时会返回404的`/releases/latest`；不把本地build路径或尚不存在的安装包URL作为下载链接，也不依赖浏览器调用GitHub API。
 
-版本发布由[release.yml](../.github/workflows/release.yml)处理：推送`v0.10.1`这类版本tag，Actions分别在Apple芯片和Intel原生runner构建arm64与x86_64包；两种架构全部成功并验证产物后才公开Release。每种架构提供DMG与ZIP，并附SHA256校验清单。版本同步、tag命令、签名和失败重跑说明见[RELEASING.md](RELEASING.md)。首次远程运行和两种芯片的安装验收仍需在实际发布时完成。
+版本发布由[release.yml](../.github/workflows/release.yml)处理：推送`v0.10.1`这类版本tag，Actions分别在Apple芯片和Intel原生runner构建arm64与x86_64包；两种架构全部成功并验证产物后才公开Release。每种架构提供DMG与ZIP，并附SHA256校验清单。版本同步、tag命令、签名和失败重跑说明见[RELEASING.md](RELEASING.md)。两种芯片的下载安装与系统功能仍需分别做实机验收。
 
 不必设置Actions变量`CIIP_RELEASE_URL`。默认Releases列表会显示后续发布的版本，发布安装包无需重新部署官网。只有改用其他公开下载入口时才设置该HTTPS变量，再重新部署Pages。`website/.env.example`提供本地覆盖示例。
 
-后续若绑定自定义域名，在Pages中配置域名与DNS，并将Actions变量PAGES_BASE_PATH设为`/`。域名操作及真实发布由你决定，本轮只准备可审阅的源码与工作流。
+后续若绑定自定义域名，在Pages中配置域名与DNS，并将Actions变量PAGES_BASE_PATH设为`/`。
 
 原生截图权限、离线OCR与签名的说明以实际应用能力和发布页为准。当前双架构发布流程不等于两种芯片的实机验收，也不等于Apple公证；官网不使用虚构评分或用户数。
