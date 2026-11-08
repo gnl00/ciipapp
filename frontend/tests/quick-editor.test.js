@@ -9,8 +9,8 @@ import {createQuickWindowGesture} from '../src/quick-window.ts';
 
 const source=readTypeScript(process.env.CIIP_QUICK_SOURCE||new URL('../src/quick.ts',import.meta.url))
  .replace(/^import .*;\n/gm,'').replace(/^export const isQuickMode=.*;$/m,'const isQuickMode=true;').replace('export function createQuickEditor','function createQuickEditor');
-function fixture(image={dataURL:'fixture',width:1280,height:720},placement={panel:{width:664,height:500},image:{x:12,y:28,width:640,height:360},scale:.5,original:true}) {
- const listeners={},nodes=[],calls=[],observers=[];
+function fixture(image={dataURL:'fixture',width:1280,height:720},placement={panel:{width:664,height:500},image:{x:12,y:28,width:640,height:360},scale:.5,original:true},manualFrames=false) {
+ const listeners={},nodes=[],calls=[],observers=[],frames=[];
  const node=()=>{const n={dataset:{},attributes:{},hasPointerCapture(){return false;},setPointerCapture(){},releasePointerCapture(){},style:{setProperty(key,value){this[key]=value;}},events:{},children:[],hidden:true,clientWidth:640,scrollWidth:640,scrollLeft:0,offsetWidth:640,offsetHeight:84,classList:{add(){},remove(){},toggle(){}},setAttribute(key,value){this.attributes[key]=value;},before(){},append(...children){this.children.push(...children);for(const child of children)child.parentElement=this;},addEventListener(type,fn){this.events[type]=fn;},removeEventListener(type){delete this.events[type];},querySelector(){return {remove(){}};},getBoundingClientRect(){return {left:0,right:this.clientWidth};},click(event={detail:1}){if(!this.disabled)return this.onclick?.(event);}};nodes.push(n);return n;};
  const toolbar=node(),properties=node(),copy=node(),wrap=node(),busy=node(),canvas=node(),tools=node();
  let toolsWidth=640;
@@ -24,15 +24,23 @@ function fixture(image={dataURL:'fixture',width:1280,height:720},placement={pane
  copy.querySelector=()=>({remove(){labelRemoved=true;}});
  const document={body:node(),createElement:node,querySelector:selector=>({'.toolbar':toolbar,'.properties':properties,'#tools':tools,'#copy':copy,'#canvas-wrap':wrap,'#busy':busy,'#canvas':canvas,'dialog[open]':modal?{}:null}[selector]),addEventListener(){}};
  const observer=class{constructor(callback){this.callback=callback;observers.push(this);}observe(){}disconnect(){this.disconnected=true;}};
- const context=vm.createContext({errorMessage,document,ResizeObserver:observer,MutationObserver:observer,matchMedia:()=>({matches:false}),innerWidth:664,innerHeight:500,window:{addEventListener:(type,fn)=>listeners[type]=fn},createQuickWindowGesture:options=>createQuickWindowGesture({...options,requestFrame:fn=>setImmediate(fn),cancelFrame:clearImmediate}),quickCanvasRect,fitQuickImage});
+ const context=vm.createContext({errorMessage,document,ResizeObserver:observer,MutationObserver:observer,matchMedia:()=>({matches:false}),innerWidth:664,innerHeight:500,window:{addEventListener:(type,fn)=>listeners[type]=fn},requestAnimationFrame:fn=>manualFrames?frames.push(fn):setImmediate(fn),setTimeout,clearTimeout,createQuickWindowGesture:options=>createQuickWindowGesture({...options,requestFrame:fn=>setImmediate(fn),cancelFrame:clearImmediate}),quickCanvasRect,fitQuickImage});
  vm.runInContext(source,context);
  const editor=context.createQuickEditor({call:async(method,...args)=>{calls.push({method,args});if(method==='GetQuickCapture')return {image,placement,doubleClickMS:800};if(method==='QuickReady')focused=toolbar;if(method==='GetQuickBounds')return {x:100,y:100,width:664,height:500};},loadCapture:async()=>{},finishEditing(){},serialize:()=>'{"base":"fixture"}',notify(){},canCloseCanvas:()=>closable});
- return {editor,calls,listeners,wrap,busy,canvas,toolbar,tools,observers,toolButtons,body:document.body,nodes,get focused(){return focused;},get labelRemoved(){return labelRemoved;},set modal(value){modal=value;},set closable(value){closable=value;},resizeTools(width){toolsWidth=width;if(tools.parentElement)tools.parentElement.clientWidth=width;observers.forEach(observer=>observer.callback([]));},selectTool(index){toolButtons.forEach((button,i)=>button.attributes['aria-pressed']=String(i===index));observers.forEach(observer=>observer.callback([]));},resize(width,height){context.innerWidth=width;context.innerHeight=height;listeners.resize();}};
+ return {editor,calls,listeners,wrap,busy,canvas,toolbar,tools,observers,toolButtons,body:document.body,nodes,frame(){frames.splice(0).forEach(fn=>fn());},get focused(){return focused;},get labelRemoved(){return labelRemoved;},set modal(value){modal=value;},set closable(value){closable=value;},resizeTools(width){toolsWidth=width;if(tools.parentElement)tools.parentElement.clientWidth=width;observers.forEach(observer=>observer.callback([]));},selectTool(index){toolButtons.forEach((button,i)=>button.attributes['aria-pressed']=String(i===index));observers.forEach(observer=>observer.callback([]));},resize(width,height){context.innerWidth=width;context.innerHeight=height;listeners.resize();}};
 }
 const baseLayout={crop:{x:0,y:0},offsetX:0,offsetY:0,width:1280,height:720};
 
 test('quick startup restores canvas focus after native activation instead of leaving the first tool focused',async()=>{
  const h=fixture();await h.editor.start();assert.equal(h.focused,h.canvas);
+});
+
+test('quick readiness waits for a painted canvas and remains bounded when a hidden WebView pauses frames',async()=>{
+ const h=fixture(undefined,undefined,true),started=h.editor.start();await new Promise(setImmediate);
+ assert.equal(h.calls.some(call=>call.method==='QuickReady'),false);
+ h.frame();await new Promise(setImmediate);assert.equal(h.calls.some(call=>call.method==='QuickReady'),false);
+ h.frame();await started;assert.equal(h.calls.filter(call=>call.method==='QuickReady').length,1);
+ const hidden=fixture(undefined,undefined,true);await hidden.editor.start();assert.equal(hidden.calls.filter(call=>call.method==='QuickReady').length,1);
 });
 
 test('overflowing quick tools expose directional scrolling while wide toolbars need no controls',()=>{
@@ -118,7 +126,7 @@ test('a second click after moving the window cannot close the editor',async()=>{
  assert.equal(h.calls.filter(call=>call.method==='CloseQuick').length,0);
 });
 
-test('copy is icon only and close lives over the screenshot outside the toolbar',async()=>{
+test('copy is icon only and close sits inside the screenshot top-right outside the toolbar',async()=>{
  const h=fixture();await h.editor.start();h.editor.position(baseLayout,.5);
  const close=h.nodes.find(node=>node.className==='quick-close');
  assert.equal(h.labelRemoved,true);assert.ok(h.body.children.includes(close));assert.ok(!h.toolbar.children.includes(close));
@@ -127,4 +135,25 @@ test('copy is icon only and close lives over the screenshot outside the toolbar'
  assert.equal(h.calls.filter(call=>call.method==='CloseQuick').length,0);
  h.closable=true;h.canvas.events.dblclick({preventDefault(){}});
  assert.equal(h.calls.filter(call=>call.method==='CloseQuick').length,1);
+});
+
+test('close stays inside normal and short captures with clear space around every resize handle',async()=>{
+ for(const [x,y,width,height]of [[98,45,124,34],[98,45,34,124],[98,45,42,34],[98,45,34,42],[98,45,124,200],[516,28,136,34]]){
+  const h=fixture({dataURL:'small',width:width*2,height:height*2},{panel:{width:664,height:500},image:{x,y,width,height},scale:.5,original:true});
+  await h.editor.start();h.editor.position({crop:{x:0,y:0},offsetX:0,offsetY:0,width:width*2,height:height*2},.5);
+  const close=h.nodes.find(node=>node.className==='quick-close'),left=parseFloat(close.style.left),top=parseFloat(close.style.top);
+  assert.ok(left>=x&&top>=y&&left+26<=x+width&&top+26<=y+height,'the control must fit inside the screenshot');
+  assert.ok(left>x+3&&left+26<x+width-3&&top>y+3&&top+26<y+height-3,'edge resize hit areas must remain clear');
+  assert.ok(x+width-left-26>=8||top-y>=8,'the top-right resize corner must remain clear');
+ }
+});
+
+test('captures too small for the close control and resize handles use clear space beside or above/below the image',async()=>{
+ for(const [x,y,width,height]of [[12,28,20,20],[620,28,20,20],[12,28,40,40],[12,28,640,32],[12,80,640,20]]){
+  const h=fixture({dataURL:'tiny',width:width*2,height:height*2},{panel:{width:664,height:500},image:{x,y,width,height},scale:.5,original:true});
+  await h.editor.start();h.editor.position({crop:{x:0,y:0},offsetX:0,offsetY:0,width:width*2,height:height*2},.5);
+  const close=h.nodes.find(node=>node.className==='quick-close'),left=parseFloat(close.style.left),top=parseFloat(close.style.top);
+  assert.ok(left>=8&&top>=8&&left+26<=656&&top+26<=492,'the control must remain fully visible');
+  assert.ok(left>=x+width+8||left+26<=x-8||top+26<=y-8||top>=y+height+8,'the control must clear the image and all resize handles');
+ }
 });

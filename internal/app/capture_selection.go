@@ -17,7 +17,11 @@ type captureSelection struct {
 
 // Native hover motion reads the same duration and curve as the application styles.
 func captureSelectionMotion(css string) (duration float64, curve [4]float64, err error) {
-	d := regexp.MustCompile(`--motion-capture-selection:\s*([0-9.]+)ms`).FindStringSubmatch(css)
+	return nativePanelMotion(css, "--motion-capture-selection")
+}
+
+func nativePanelMotion(css, durationToken string) (duration float64, curve [4]float64, err error) {
+	d := regexp.MustCompile(regexp.QuoteMeta(durationToken) + `:\s*([0-9.]+)ms`).FindStringSubmatch(css)
 	c := regexp.MustCompile(`--ease-panel:\s*cubic-bezier\(([^)]+)\)`).FindStringSubmatch(css)
 	if len(d) != 2 || len(c) != 2 {
 		return 0, curve, errors.New("截图动效设计变量缺失")

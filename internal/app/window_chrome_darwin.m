@@ -8,6 +8,20 @@
 
 double ciip_double_click_interval(void) { return [NSEvent doubleClickInterval]; }
 
+void ciip_reveal_quick_window(uintptr_t handle, double duration, double x1, double y1, double x2, double y2) {
+    NSWindow *window = (NSWindow *)handle;
+    if (!window) return;
+    if (duration <= 0 || NSWorkspace.sharedWorkspace.accessibilityDisplayShouldReduceMotion) {
+        window.alphaValue = 1;
+        return;
+    }
+    [NSAnimationContext runAnimationGroup:^(NSAnimationContext *context) {
+        context.duration = duration;
+        context.timingFunction = [CAMediaTimingFunction functionWithControlPoints:x1 :y1 :x2 :y2];
+        window.animator.alphaValue = 1;
+    } completionHandler:nil];
+}
+
 void ciip_refresh_pin_shadow(uintptr_t handle) {
     NSWindow *window = (NSWindow *)handle;
     if (!window) return;

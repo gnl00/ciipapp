@@ -6,21 +6,23 @@ import {readFileSync} from 'node:fs';
 import vm from 'node:vm';
 
 const html=readFileSync(process.env.CIIP_PIN_HTML_SOURCE||new URL('../src/pin.template.html',import.meta.url),'utf8');
-const source=readTypeScript(new URL('../src/pin.ts',import.meta.url)).replace(/^import .*;\n/gm,'').replace('export function startPin','function startPin');
+const source=readTypeScript(process.env.CIIP_PIN_SOURCE||new URL('../src/pin.ts',import.meta.url)).replace(/^import .*;\n/gm,'').replace('export function startPin','function startPin');
 function fixture({reducedMotion=false,nativePinch=false}={}){
  const script=source+'\nstartPin('+JSON.stringify({id:'pin-one',dataURL:'fixture',nativePinch})+');';
  const nodes=new Map(),listeners={},calls=[],steps=[],frames=[],animations=[],gestures=[],wheels=[];
  let layout={left:0,top:0,width:500,height:300,percentage:'50%'};
- const document={activeElement:null,getElementById:id=>nodes.get(id),querySelector:selector=>nodes.get(selector)};
+ const snapshots=[];
+ const document={activeElement:null,getElementById:id=>nodes.get(id),querySelector:selector=>nodes.get(selector),createElement:()=>node('snapshot'),body:{append(element){snapshots.push(element);}}};
  function node(id){const n={id,style:{},classList:{toggle(){}},events:{},naturalWidth:1000,naturalHeight:600,focusable:id!=='image'||/<img[^>]*id="image"[^>]*tabindex="-1"/.test(html),
   addEventListener(type,callback){(this.events[type]??=[]).push(callback);},setAttribute(){},focus(){if(this.focusable)document.activeElement=this;},closest(selector){return selector==='button'&&['minus','plus','edit','copy','close'].includes(id)?this:null;},
-  animate(keyframes,options){const animation={keyframes,options,playState:'running',cancel(){this.playState='idle';}};animations.push(animation);return animation;}};nodes.set(id,n);return n;}
+  append(...children){this.children=children;},remove(){this.removed=true;},querySelectorAll(){return this.ghostButtons||[];},cloneNode(){const clone=node('outgoing');clone.computed=this.computed;clone.ghostButtons=[{id:'close',dataset:{},disabled:false,tabIndex:0,removeAttribute(name){delete this[name];}}];return clone;},getBoundingClientRect(){return {left:200,top:8,width:292,height:40};},
+  animate(keyframes,options){const animation={target:this,keyframes,options,playState:'running',cancel(){this.playState='idle';this.oncancel?.();}};animations.push(animation);return animation;}};nodes.set(id,n);return n;}
  for(const id of ['image','surface','scale','message','minus','plus','edit','copy','close','.controls'])node(id);
  const window={addEventListener(type,callback){(listeners[type]??=[]).push(callback);},matchMedia:()=>({matches:reducedMotion}),mygo:{call:async(method,...args)=>{calls.push({method,args});}}};
  vm.runInNewContext(script,{errorMessage,document,window,innerWidth:500,innerHeight:300,requestAnimationFrame:callback=>frames.push(callback),getComputedStyle:node=>({lineHeight:'16px',opacity:'1',transform:'none',...node?.computed}),
   pinImageLayout:()=>layout,
   createPinZoomController:()=>({step:factor=>steps.push(factor),wheel:event=>wheels.push(event),gestureStart:()=>gestures.push('start'),gestureChange:()=>gestures.push('change'),gestureEnd:()=>gestures.push('end'),destroy(){}}),setTimeout(){}});
- return {document,nodes,calls,steps,animations,gestures,wheels,resize:size=>{Object.assign(layout,size);(listeners.resize||[]).forEach(callback=>callback());},frame:()=>frames.splice(0).forEach(callback=>callback()),load:()=>(nodes.get('image').events.load||[]).forEach(callback=>callback()),fire:(type,event={})=>(listeners[type]||[]).forEach(callback=>callback(event))};
+ return {document,nodes,calls,steps,animations,snapshots,gestures,wheels,resize:size=>{Object.assign(layout,size);(listeners.resize||[]).forEach(callback=>callback());},frame:()=>frames.splice(0).forEach(callback=>callback()),load:()=>(nodes.get('image').events.load||[]).forEach(callback=>callback()),fire:(type,event={})=>(listeners[type]||[]).forEach(callback=>callback(event))};
 }
 
 test('a pin starts focused on its image and restores neutral focus after native activation',()=>{
@@ -57,22 +59,37 @@ test('closing a pin before its image paints cancels the pending shadow refresh',
 test('toolbar motion runs only when its display mode changes, not on initial paint or ordinary resizing',()=>{
  const h=fixture();h.load();assert.equal(h.animations.length,0);
  h.resize({width:480});assert.equal(h.animations.length,0);
- h.resize({width:400});assert.equal(h.animations.length,1);
- h.resize({width:300});assert.equal(h.animations.length,1);
- h.resize({width:249});assert.equal(h.animations.length,2);
- assert.equal(h.animations[1].options.duration,140);
- assert.deepEqual(Object.keys(h.animations[1].keyframes[0]).sort(),['opacity','transform']);
- h.resize({width:260});assert.equal(h.animations.length,3);
- h.resize({height:53});assert.equal(h.animations.length,4);
+ h.resize({width:400});assert.equal(h.animations.length,2);
+ h.resize({width:300});assert.equal(h.animations.length,2);
+ h.resize({width:249});assert.equal(h.animations.length,4);
+ assert.equal(h.animations[3].options.duration,140);
+ assert.deepEqual(Object.keys(h.animations[3].keyframes[0]).sort(),['opacity','transform']);
+ h.resize({width:260});assert.equal(h.animations.length,6);
+ h.resize({height:53});assert.equal(h.animations.length,8);
 });
 
-test('a reversed toolbar transition continues from the current visible frame and cancels its predecessor',()=>{
+test('a reversed toolbar transition retains the current outgoing frame and cancels its incoming predecessor',()=>{
  const h=fixture();h.load();h.resize({width:249});
  h.nodes.get('.controls').computed={opacity:'0.45',transform:'matrix(0.98, 0, 0, 0.98, 0, -1)'};
  h.resize({width:260});
- assert.equal(h.animations[0].playState,'idle');
- assert.equal(h.animations[1].keyframes[0].opacity,'0.45');
- assert.equal(h.animations[1].keyframes[0].transform,'matrix(0.98, 0, 0, 0.98, 0, -1)');
+ assert.equal(h.animations[1].playState,'idle');
+ assert.equal(h.animations[2].keyframes[0].opacity,'0.45');
+ assert.equal(h.animations[2].keyframes[0].transform,'matrix(0.98, 0, 0, 0.98, 0, -1)');
+ assert.equal(h.animations[3].keyframes[0].opacity,0);
+});
+
+test('outgoing toolbar contents remain visible during both close-mode transitions and snapshots cannot receive input',()=>{
+ const h=fixture();h.load();h.resize({width:249});h.resize({width:500});
+ assert.equal(h.snapshots.length,2);
+ for(const snapshot of h.snapshots){
+  assert.equal(snapshot.inert,true);assert.ok(snapshot.className.includes('pin-toolbar-previous'));
+  const button=snapshot.children[0].ghostButtons[0];assert.equal(button.id,undefined);assert.equal(button.dataset.pinControl,'close');assert.equal(button.disabled,true);assert.equal(button.tabIndex,-1);
+ }
+ assert.equal(h.animations[0].keyframes[0].opacity,'1');assert.equal(h.animations[0].keyframes[1].opacity,0);
+ assert.equal(h.animations[0].options.fill,'forwards','the outgoing frame stays hidden until its finish cleanup runs');
+ assert.equal(h.animations[2].keyframes[0].opacity,'1');assert.equal(h.animations[2].keyframes[1].opacity,0);
+ h.animations[0].onfinish();assert.equal(h.snapshots[0].removed,true);
+ h.fire('pagehide');assert.ok(h.snapshots.every(snapshot=>snapshot.removed));
 });
 
 test('reduced motion changes toolbar modes without animation',()=>{
@@ -85,7 +102,7 @@ test('pin toolbar motion consumes shared time and easing tokens, including zero 
   const h=fixture();h.load();
   h.nodes.get('.controls').computed={getPropertyValue:name=>name==='--motion-pin-toolbar'?token:'linear'};
   h.resize({width:249});
-  assert.equal(h.animations.length,expected?1:0);
+  assert.equal(h.animations.length,expected?2:0);
   if(expected){assert.equal(h.animations[0].options.duration,expected);assert.equal(h.animations[0].options.easing,'linear');}
  }
 });
@@ -94,8 +111,8 @@ test('toolbar transitions respect hidden hover state and release their opacity w
  const h=fixture();h.load();h.nodes.get('.controls').computed={opacity:'0'};
  h.resize({width:249});assert.equal(h.animations.length,0);
  h.nodes.get('.controls').computed={opacity:'1'};h.resize({width:260});
- assert.equal(h.animations.length,1);
- h.fire('mouseout',{relatedTarget:null});assert.equal(h.animations[0].playState,'idle');
+ assert.equal(h.animations.length,2);
+ h.fire('mouseout',{relatedTarget:null});assert.ok(h.animations.every(animation=>animation.playState==='idle'));assert.equal(h.snapshots[0].removed,true);
 });
 
 test('native magnify ownership prevents duplicate WebKit gesture zoom and preserves wheel input',()=>{

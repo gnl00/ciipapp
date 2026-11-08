@@ -69,8 +69,17 @@ export function createQuickEditor({call,loadCapture,finishEditing,serialize,noti
  function positionControls(){
   if(!canvasRect)return;
   panel.style.transform=`translate(12px,${Math.max(28,innerHeight-104)}px)`;
-  close.style.left=`${Math.max(8,Math.min(innerWidth-34,canvasRect.x+canvasRect.width-34))}px`;
-  close.style.top=`${Math.max(8,canvasRect.y+8)}px`;
+  const {x,y,width,height}=canvasRect,size=26,inset=8,gap=12,right=x+width;
+  const inside=Math.min(width,height)>=size+8&&Math.max(width,height)>=size+inset*2;
+  let left=right-size-Math.min(inset,(width-size)/2),top=y+Math.min(inset,(height-size)/2);
+  // Keep the full-size control clear of the resize handles when a tiny capture cannot contain both.
+  if(!inside){
+   if(right+gap+size<=innerWidth-inset){left=right+gap;top=y;}
+   else if(x-gap-size>=inset){left=x-gap-size;top=y;}
+   else{left=right-size-inset;top=y>=size+inset*2?y-size-inset:y+height+inset;}
+  }
+  close.style.left=`${Math.max(inset,Math.min(innerWidth-size-inset,left))}px`;
+  close.style.top=`${Math.max(inset,Math.min(innerHeight-size-inset,top))}px`;
   Object.assign(resizeFrame.style,{left:`${canvasRect.x}px`,top:`${canvasRect.y}px`,width:`${canvasRect.width}px`,height:`${canvasRect.height}px`});
  }
  async function finish(){if(ending)return;ending=true;windowGesture.cancel();try{await call('CloseQuick');}catch(error){ending=false;notify(errorMessage(error),true);}}
@@ -93,7 +102,13 @@ export function createQuickEditor({call,loadCapture,finishEditing,serialize,noti
  window.addEventListener('resize',positionControls);
  canvas.addEventListener('dblclick',event=>{if(!blocked()&&canCloseCanvas?.(event)){event.preventDefault();finishEditing();void finish();}});
  return {
-  async start(){capture=await call('GetQuickCapture');await loadCapture(capture.image,'快捷编辑 · 原图已自动复制');canvas.focus({preventScroll:true});await call('QuickReady');canvas.focus({preventScroll:true});},
+  async start(){
+   capture=await call('GetQuickCapture');await loadCapture(capture.image,'快捷编辑 · 原图已自动复制');canvas.focus({preventScroll:true});
+   // Let WebKit commit the populated canvas before the native window fades in.
+   // Hidden WebViews may pause animation frames, so readiness has a short bound.
+   await new Promise<void>(resolve=>{const deadline=setTimeout(resolve,50);requestAnimationFrame(()=>requestAnimationFrame(()=>{clearTimeout(deadline);resolve();}));});
+   await call('QuickReady');canvas.focus({preventScroll:true});
+  },
   replaceImage(image:CaptureImage){if(capture&&(capture.image.dataURL!==image.dataURL||capture.image.width!==image.width||capture.image.height!==image.height))capture={...capture,image,placement:null};},
   scale(layout:FrameLayout){
    if(!capture)return;

@@ -72,14 +72,77 @@ static BOOL captureElementRect(AXUIElementRef element, CGRect *rect) {
     return usableCaptureRect(*rect);
 }
 
+static void visitCaptureElements(AXUIElementRef element, CGPoint point, CGRect clip, NSTimeInterval deadline, NSUInteger depth,
+    CFMutableSetRef visited, AXUIElementRef *smallest, CGRect *smallestRect, NSUInteger *smallestDepth, BOOL *incomplete) {
+    if (depth >= 32 || CFSetContainsValue(visited, element) || *incomplete) return;
+    if (NSProcessInfo.processInfo.systemUptime >= deadline) { *incomplete = YES; return; }
+    CFSetAddValue(visited, element); AXUIElementSetMessagingTimeout(element, .15);
+    CGRect rect = CGRectNull;
+    BOOL hasFrame = captureElementRect(element, &rect);
+    if (hasFrame) rect = CGRectIntersection(rect, clip);
+    BOOL containsPoint = usableCaptureRect(rect) && CGRectContainsPoint(rect, point);
+    // Some accessibility wrappers have no frame but expose children with usable bounds.
+    if (depth && hasFrame && !containsPoint) return;
+    if (containsPoint) {
+        // Geometry breaks equal-area ties, so an AX sibling reorder cannot change the selected frame.
+        CGFloat score[] = {rect.size.width * rect.size.height, rect.origin.x, rect.origin.y, rect.size.width, rect.size.height};
+        CGFloat previous[] = {smallestRect->size.width * smallestRect->size.height, smallestRect->origin.x, smallestRect->origin.y, smallestRect->size.width, smallestRect->size.height};
+        BOOL precedes = CGRectIsNull(*smallestRect);
+        for (NSUInteger i = 0; !precedes && i < 5; i++) {
+            if (score[i] == previous[i]) continue;
+            precedes = score[i] < previous[i]; break;
+        }
+        if (CGRectEqualToRect(rect, *smallestRect) && depth > *smallestDepth) precedes = YES;
+        if (precedes) {
+            CFRetain(element); CFRelease(*smallest); *smallest = element; *smallestRect = rect; *smallestDepth = depth;
+        }
+    }
+    CFTypeRef value = NULL;
+    AXError error = AXUIElementCopyAttributeValue(element, kAXChildrenAttribute, &value);
+    if (error == kAXErrorCannotComplete) *incomplete = YES;
+    if (value && CFGetTypeID(value) == CFArrayGetTypeID()) {
+        CFArrayRef children = (CFArrayRef)value;
+        CFIndex count = MIN(CFArrayGetCount(children), 256);
+        for (CFIndex i = 0; i < count && !*incomplete; i++) {
+            CFTypeRef child = CFArrayGetValueAtIndex(children, i);
+            if (CFGetTypeID(child) == AXUIElementGetTypeID())
+                visitCaptureElements((AXUIElementRef)child, point, clip, deadline, depth + 1, visited, smallest, smallestRect, smallestDepth, incomplete);
+        }
+    }
+    if (value) CFRelease(value);
+    if (NSProcessInfo.processInfo.systemUptime >= deadline) *incomplete = YES;
+}
+
+// Resolve every overlapping branch: the smallest direct child need not contain the smallest descendant.
+static AXUIElementRef smallestCaptureElement(AXUIElementRef hit, CGPoint point, CGRect clip, NSTimeInterval deadline, BOOL *incomplete) {
+    AXUIElementRef smallest = (AXUIElementRef)CFRetain(hit);
+    CGRect rect = CGRectNull;
+    NSUInteger depth = 0;
+    CFMutableSetRef visited = CFSetCreateMutable(NULL, 0, &kCFTypeSetCallBacks);
+    visitCaptureElements(hit, point, clip, deadline, 0, visited, &smallest, &rect, &depth, incomplete);
+    CFRelease(visited);
+    return smallest;
+}
+
 // Query the underlying application directly so our mouse-catching overlay is never the AX target.
 static NSArray *captureElementsAtPoint(pid_t pid, CGPoint point, CGRect clip) {
     NSTimeInterval started = NSProcessInfo.processInfo.systemUptime;
     AXUIElementRef application = AXUIElementCreateApplication(pid), element = NULL;
     AXUIElementSetMessagingTimeout(application, .15);
-    AXUIElementCopyElementAtPosition(application, point.x, point.y, &element);
+    AXError hitError = AXUIElementCopyElementAtPosition(application, point.x, point.y, &element);
     CFRelease(application);
+    if (hitError == kAXErrorCannotComplete) { if (element) CFRelease(element); return nil; }
     NSMutableArray *candidates = [NSMutableArray array];
+    if (!element) return candidates;
+    BOOL incomplete = NO;
+    AXUIElementRef smallest = smallestCaptureElement(element, point, clip, started + .5, &incomplete);
+    CFRelease(element); element = smallest;
+    if (incomplete) { CFRelease(element); return nil; }
+    CFTypeRef role = NULL;
+    AXUIElementCopyAttributeValue(element, kAXRoleAttribute, &role);
+    BOOL windowFallback = role && (CFEqual(role, kAXWindowRole) || CFEqual(role, kAXApplicationRole));
+    if (role) CFRelease(role);
+    if (windowFallback) { CFRelease(element); return nil; }
     CGRect previous = CGRectNull;
     // Bound traversal for malformed trees and applications that return a cyclic parent chain.
     for (NSUInteger depth = 0; element && depth < 32 && NSProcessInfo.processInfo.systemUptime - started < .5; depth++) {
@@ -92,10 +155,11 @@ static NSArray *captureElementsAtPoint(pid_t pid, CGPoint point, CGRect clip) {
                 CFTypeRef role = NULL;
                 AXUIElementCopyAttributeValue(element, kAXRoleDescriptionAttribute, &role);
                 NSString *label = role && CFGetTypeID(role) == CFStringGetTypeID() ? (NSString *)role : @"元素";
-                [candidates addObject:@{@"rect": [NSValue valueWithRect:NSRectFromCGRect(rect)], @"label": label}];
+                [candidates addObject:@{@"rect": [NSValue valueWithRect:NSRectFromCGRect(rect)], @"label": label, @"element": (id)element}];
                 if (role) CFRelease(role);
                 previous = rect;
             }
+            if (CGRectEqualToRect(rect, clip)) break;
         }
         CFTypeRef parent = NULL;
         AXUIElementCopyAttributeValue(element, kAXParentAttribute, &parent);
@@ -104,7 +168,42 @@ static NSArray *captureElementsAtPoint(pid_t pid, CGPoint point, CGRect clip) {
         if (parent && !element) CFRelease(parent);
     }
     if (element) CFRelease(element);
+    if (!candidates.count && NSProcessInfo.processInfo.systemUptime - started >= .5) return nil;
     return candidates;
+}
+
+// Lazy AX trees can briefly hit an ancestor with no exposed children. A still-live descendant
+// from the previous hit is stronger evidence than that coarse reply, while the pointer remains inside it.
+static NSArray *captureElementsKeepingLeaf(NSArray *elements, NSArray *previous, CGPoint point, CGRect clip) {
+    if (!elements.count || !previous.count) return elements;
+    NSDictionary *leaf = previous[0], *first = elements[0];
+    CGRect oldRect = NSRectToCGRect([leaf[@"rect"] rectValue]), newRect = NSRectToCGRect([first[@"rect"] rectValue]);
+    AXUIElementRef oldElement = (AXUIElementRef)leaf[@"element"], ancestor = (AXUIElementRef)first[@"element"];
+    if (!oldElement || !ancestor || CGRectEqualToRect(oldRect, newRect) ||
+        !CGRectContainsPoint(oldRect, point) || !CGRectContainsRect(newRect, oldRect)) return elements;
+    CGRect liveRect;
+    AXUIElementSetMessagingTimeout(oldElement, .05);
+    if (!captureElementRect(oldElement, &liveRect) || !CGRectEqualToRect(CGRectIntersection(liveRect, clip), oldRect)) return elements;
+    AXUIElementRef current = (AXUIElementRef)CFRetain(oldElement);
+    NSTimeInterval deadline = NSProcessInfo.processInfo.systemUptime + .15;
+    BOOL attached = NO;
+    CFMutableSetRef visited = CFSetCreateMutable(NULL, 0, &kCFTypeSetCallBacks);
+    for (NSUInteger depth = 0; current && depth < 32 && NSProcessInfo.processInfo.systemUptime < deadline; depth++) {
+        if (CFEqual(current, ancestor)) { attached = YES; break; }
+        if (CFSetContainsValue(visited, current)) break;
+        CFSetAddValue(visited, current); AXUIElementSetMessagingTimeout(current, .05);
+        CFTypeRef parent = NULL;
+        AXUIElementCopyAttributeValue(current, kAXParentAttribute, &parent);
+        CFRelease(current);
+        current = parent && CFGetTypeID(parent) == AXUIElementGetTypeID() ? (AXUIElementRef)parent : NULL;
+        if (parent && !current) CFRelease(parent);
+    }
+    if (current) CFRelease(current);
+    CFRelease(visited);
+    if (!attached) return elements;
+    NSMutableArray *resolved = [NSMutableArray arrayWithObject:leaf];
+    [resolved addObjectsFromArray:elements];
+    return resolved;
 }
 
 @class CIIPCapturePicker;
@@ -136,6 +235,11 @@ static NSArray *captureElementsAtPoint(pid_t pid, CGPoint point, CGRect clip) {
 @property(nonatomic, retain) NSDictionary *targetWindow;
 @property(nonatomic, retain) NSArray *elements;
 @property(nonatomic) NSUInteger elementIndex;
+@property(nonatomic) NSUInteger unresolvedRetries;
+@property(nonatomic, retain) NSArray *ancestorProposal;
+@property(nonatomic) CGPoint ancestorProposalPoint;
+@property(nonatomic) NSTimeInterval ancestorProposalSince;
+@property(nonatomic) NSUInteger ancestorProposalGeneration;
 @property(nonatomic, retain) NSImage *appIcon;
 @property(nonatomic, copy) NSString *appName;
 @property(nonatomic, retain) NSMutableArray *panels;
@@ -143,6 +247,9 @@ static NSArray *captureElementsAtPoint(pid_t pid, CGPoint point, CGRect clip) {
 @property(nonatomic) NSTimeInterval selectionDuration;
 @property(nonatomic, retain) CAMediaTimingFunction *selectionCurve;
 - (void)sample;
+- (void)clearAncestorProposal;
+- (BOOL)acceptAncestorProposal;
+- (BOOL)deferAncestor:(NSArray *)elements window:(NSDictionary *)window point:(CGPoint)point requestedAt:(NSTimeInterval)requestedAt;
 - (void)redraw;
 - (void)redrawAnimated:(BOOL)animated;
 - (void)confirm;
@@ -151,6 +258,9 @@ static NSArray *captureElementsAtPoint(pid_t pid, CGPoint point, CGRect clip) {
 @end
 
 static CIIPCapturePicker *activeCapturePicker;
+// A pointer crossing the gap between children should not briefly spotlight their entire ancestor.
+// This selection policy also applies when the user reduces visual animation.
+static const NSTimeInterval captureAncestorDwell = .12;
 
 @implementation CIIPCaptureSelectionView
 - (instancetype)initWithFrame:(NSRect)frame {
@@ -254,10 +364,55 @@ static CIIPCapturePicker *activeCapturePicker;
     return self;
 }
 - (void)dealloc {
-    [_targetWindow release]; [_elements release]; [_appIcon release]; [_appName release]; [_panels release]; [_timer release]; [_selectionCurve release];
+    [_targetWindow release]; [_elements release]; [_ancestorProposal release]; [_appIcon release]; [_appName release]; [_panels release]; [_timer release]; [_selectionCurve release];
     [super dealloc];
 }
 - (void)redraw { [self redrawAnimated:YES]; }
+- (void)clearAncestorProposal {
+    self.ancestorProposal = nil; self.ancestorProposalSince = 0;
+    self.ancestorProposalPoint = CGPointMake(INFINITY, INFINITY); self.ancestorProposalGeneration++;
+}
+- (BOOL)acceptAncestorProposal {
+    if (!self.ancestorProposal.count || self.querying || !CGPointEqualToPoint(self.ancestorProposalPoint, self.point)) return NO;
+    CGRect rect = NSRectToCGRect([self.ancestorProposal[0][@"rect"] rectValue]);
+    if (!CGRectContainsPoint(rect, self.point)) return NO;
+    self.elements = self.ancestorProposal; self.elementIndex = 0; self.rect = rect; self.pending = NO;
+    [self clearAncestorProposal]; return YES;
+}
+- (BOOL)deferAncestor:(NSArray *)elements window:(NSDictionary *)window point:(CGPoint)point requestedAt:(NSTimeInterval)requestedAt {
+    CGRect oldRect = self.elements.count ? NSRectToCGRect([self.elements[0][@"rect"] rectValue]) : CGRectNull;
+    CGRect rect = elements.count ? NSRectToCGRect([elements[0][@"rect"] rectValue]) : CGRectNull;
+    if (!usableCaptureRect(oldRect) || !usableCaptureRect(rect) || CGRectEqualToRect(rect, oldRect) ||
+        !CGRectContainsRect(rect, oldRect) || !CGRectContainsRect(rect, self.rect) || CGRectEqualToRect(rect, self.rect)) {
+        [self clearAncestorProposal]; return NO;
+    }
+    BOOL sameProposal = self.ancestorProposal.count && [self.ancestorProposal[0][@"rect"] isEqual:elements[0][@"rect"]];
+    NSPoint mouse = NSEvent.mouseLocation;
+    CGPoint livePoint = CGPointMake(mouse.x, self.desktopTop - mouse.y);
+    if (!CGPointEqualToPoint(point, self.point) || !CGPointEqualToPoint(point, livePoint)) {
+        if (!sameProposal) [self clearAncestorProposal];
+        self.point = CGPointMake(INFINITY, INFINITY); [self sample]; return YES;
+    }
+    if (sameProposal && requestedAt >= self.ancestorProposalSince + captureAncestorDwell) {
+        [self clearAncestorProposal]; return NO; // A fresh hit after the dwell confirms the ancestor.
+    }
+    self.ancestorProposal = elements; self.ancestorProposalPoint = point; self.pending = YES;
+    if (!sameProposal) {
+        self.ancestorProposalSince = NSProcessInfo.processInfo.systemUptime;
+        NSUInteger generation = ++self.ancestorProposalGeneration;
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(captureAncestorDwell * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            if (!self.finished && self.ancestorProposal.count && generation == self.ancestorProposalGeneration && sameCaptureWindow(window, self.targetWindow)) {
+                // Read the physical pointer again, including movement between the regular 50ms samples.
+                self.point = CGPointMake(INFINITY, INFINITY); [self sample];
+            }
+        });
+    }
+    [self redraw];
+    if (NSProcessInfo.processInfo.systemUptime >= self.ancestorProposalSince + captureAncestorDwell) {
+        self.point = CGPointMake(INFINITY, INFINITY); [self sample];
+    }
+    return YES;
+}
 - (void)redrawAnimated:(BOOL)animated {
     NSString *detail = self.elementMode ? (self.elements.count ? self.elements[self.elementIndex][@"label"] : self.pending ? @"正在识别元素" : @"此处没有可识别元素") : self.targetWindow[(id)kCGWindowName];
     NSString *label = [NSString stringWithFormat:@"%@，%@", self.appName ?: (self.elementMode ? @"选择屏幕元素" : @"选择应用窗口"), detail ?: @"移动指针选择目标"];
@@ -271,7 +426,10 @@ static CIIPCapturePicker *activeCapturePicker;
     NSPoint mouse = NSEvent.mouseLocation;
     CGPoint point = CGPointMake(mouse.x, self.desktopTop - mouse.y);
     if (CGPointEqualToPoint(point, self.point)) return;
+    if (isfinite(self.point.x)) self.unresolvedRetries = 0;
     self.point = point;
+    if (self.ancestorProposal.count && !CGRectContainsPoint(NSRectToCGRect([self.ancestorProposal[0][@"rect"] rectValue]), point))
+        [self clearAncestorProposal];
     NSArray *windows = [(NSArray *)CGWindowListCopyWindowInfo(kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements, kCGNullWindowID) autorelease];
     NSMutableSet *excluded = [NSMutableSet set];
     for (NSPanel *panel in self.panels) [excluded addObject:@(panel.windowNumber)];
@@ -279,7 +437,7 @@ static CIIPCapturePicker *activeCapturePicker;
     BOOL sameWindow = sameCaptureWindow(window, self.targetWindow);
     BOOL sameApp = window && [window[(id)kCGWindowOwnerPID] isEqual:self.targetWindow[(id)kCGWindowOwnerPID]];
     // Keep the last resolved frame during AX refresh; clearing it here makes every pointer move blink.
-    if (!sameWindow) { self.rect = CGRectNull; self.elements = nil; self.elementIndex = 0; }
+    if (!sameWindow) { [self clearAncestorProposal]; self.rect = CGRectNull; self.elements = nil; self.elementIndex = 0; }
     self.targetWindow = window;
     pid_t pid = [self.targetWindow[(id)kCGWindowOwnerPID] intValue];
     if (!sameApp || !self.appIcon) {
@@ -296,21 +454,41 @@ static CIIPCapturePicker *activeCapturePicker;
     self.pending = YES; [self redraw];
     if (self.querying) return;
     self.querying = YES;
+    NSArray *previous = sameWindow ? self.elements : nil;
     CGRect clip = windowRect;
     for (NSScreen *screen in NSScreen.screens) if (NSPointInRect(mouse, screen.frame)) {
         clip = CGRectIntersection(clip, CGRectMake(screen.frame.origin.x, self.desktopTop - NSMaxY(screen.frame), screen.frame.size.width, screen.frame.size.height));
         break;
     }
     // AX IPC can block on an unresponsive app. Keep it off AppKit's event thread.
+    NSTimeInterval requestedAt = NSProcessInfo.processInfo.systemUptime;
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
         @autoreleasepool {
-            NSArray *elements = captureElementsAtPoint(pid, point, clip);
+            NSArray *elements = captureElementsKeepingLeaf(captureElementsAtPoint(pid, point, clip), previous, point, clip);
             dispatch_async(dispatch_get_main_queue(), ^{
                 self.querying = NO;
                 if (self.finished) return;
-                if (!CGPointEqualToPoint(point, self.point) || !sameCaptureWindow(window, self.targetWindow)) {
+                BOOL sameLeaf = elements.count && CGRectContainsPoint(NSRectToCGRect([elements[0][@"rect"] rectValue]), self.point);
+                if ((!CGPointEqualToPoint(point, self.point) && !sameLeaf) || !sameCaptureWindow(window, self.targetWindow)) {
                     self.point = CGPointMake(INFINITY, INFINITY); [self sample]; return;
                 }
+                if (!elements) {
+                    [self clearAncestorProposal];
+                    // Transient AX failures must not turn the previous hole into a full-screen flash.
+                    if (self.unresolvedRetries++ >= 2) {
+                        self.pending = NO; self.elements = nil; self.rect = CGRectNull; self.elementIndex = 0;
+                        [self redraw]; return;
+                    }
+                    self.pending = YES; [self redraw];
+                    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 100 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{
+                        if (!self.finished && self.pending && self.unresolvedRetries > 0 && !self.querying && CGPointEqualToPoint(point, self.point) && sameCaptureWindow(window, self.targetWindow)) {
+                            self.point = CGPointMake(INFINITY, INFINITY); [self sample];
+                        }
+                    });
+                    return;
+                }
+                self.unresolvedRetries = 0;
+                if ([self deferAncestor:elements window:window point:point requestedAt:requestedAt]) return;
                 NSUInteger index = 0;
                 if (self.elements.count && elements.count && [self.elements[0][@"rect"] isEqual:elements[0][@"rect"]]) {
                     for (NSUInteger i = 0; i < elements.count; i++) {
@@ -320,6 +498,10 @@ static CIIPCapturePicker *activeCapturePicker;
                 self.pending = NO; self.elements = elements; self.elementIndex = index;
                 self.rect = elements.count ? NSRectToCGRect([elements[index][@"rect"] rectValue]) : CGRectNull;
                 [self redraw];
+                // Show useful progress while moving, then resolve the exact latest point before confirmation.
+                if (!CGPointEqualToPoint(point, self.point)) {
+                    self.point = CGPointMake(INFINITY, INFINITY); [self sample];
+                }
             });
         }
     });
@@ -341,6 +523,10 @@ static CIIPCapturePicker *activeCapturePicker;
 - (void)keyDown:(NSEvent *)event {
     if (event.keyCode == 53) { [self finish:NO]; return; }
     if (event.keyCode == 36 || event.keyCode == 76) { [self confirm]; return; }
+    if (event.keyCode == 126 && self.ancestorProposal.count) {
+        [self sample];
+        if ([self acceptAncestorProposal]) { [self redrawAnimated:NO]; return; }
+    }
     if (!self.elementMode || self.pending || !self.elements.count) return;
     if (event.keyCode == 126 && self.elementIndex + 1 < self.elements.count) self.elementIndex++;
     else if (event.keyCode == 125 && self.elementIndex > 0) self.elementIndex--;
@@ -351,6 +537,7 @@ static CIIPCapturePicker *activeCapturePicker;
 - (void)finish:(BOOL)accepted {
     if (self.finished) return;
     self.finished = YES; [self.timer invalidate]; self.timer = nil;
+    [self clearAncestorProposal];
     [[NSNotificationCenter defaultCenter] removeObserver:self];
     for (NSPanel *panel in self.panels) [panel close];
     [self.panels removeAllObjects];

@@ -6,8 +6,11 @@
 #include <stdatomic.h>
 #import <objc/runtime.h>
 
-static AXUIElementRef leaf, duplicate, parent;
-static BOOL unavailable;
+static AXUIElementRef leaf, duplicate, parent, root, sibling;
+static BOOL unavailable, transientFailure;
+static BOOL hitContainer, hitGroup, rootChildrenAvailable;
+static BOOL overlappingBranches, sameBoundsSibling, equalAreaSibling, reverseBranches;
+static BOOL sameFrameDescendants, framelessParent;
 static NSArray *fixtureWindows;
 static NSUInteger callbackCount;
 static CGRect callbackRect;
@@ -17,25 +20,42 @@ static void fixtureBeep(void) { beepCount++; }
 static dispatch_semaphore_t hitGate, hitEntered;
 static atomic_uint hitCount;
 static CGPoint leafOrigin = {-160, 120};
+static CGRect containerRect = {{-200, 100}, {200, 140}};
+static CGSize leafSize = {40, 24};
 static AXError fixtureHit(AXUIElementRef application, float x, float y, AXUIElementRef *out) {
     atomic_fetch_add(&hitCount, 1);
     if (hitGate) {
         dispatch_semaphore_signal(hitEntered);
         dispatch_semaphore_wait(hitGate, DISPATCH_TIME_FOREVER);
     }
-    if (unavailable) return kAXErrorCannotComplete;
-    *out = (AXUIElementRef)CFRetain(leaf); return kAXErrorSuccess;
+    if (transientFailure) return kAXErrorCannotComplete;
+    if (unavailable) return kAXErrorNotImplemented;
+    *out = (AXUIElementRef)CFRetain(hitContainer ? root : hitGroup ? parent : leaf); return kAXErrorSuccess;
 }
 static AXError fixtureAttribute(AXUIElementRef element, CFStringRef attribute, CFTypeRef *out) {
     if (CFEqual(attribute, kAXPositionAttribute)) {
-        CGPoint point = element == parent ? CGPointMake(-200, 100) : leafOrigin;
+        if (element == parent && framelessParent) return kAXErrorNoValue;
+        CGPoint point = sameFrameDescendants || element == parent || element == root || (element == sibling && sameBoundsSibling) ? containerRect.origin : element == sibling ? (equalAreaSibling ? CGPointMake(-165, 115) : CGPointMake(-180, 110)) : leafOrigin;
         *out = AXValueCreate(kAXValueCGPointType, &point);
     } else if (CFEqual(attribute, kAXSizeAttribute)) {
-        CGSize size = element == parent ? CGSizeMake(200, 140) : CGSizeMake(40, 24);
+        if (element == parent && framelessParent) return kAXErrorNoValue;
+        CGSize size = sameFrameDescendants || element == parent || element == root || (element == sibling && sameBoundsSibling) ? containerRect.size : element == sibling && !equalAreaSibling ? CGSizeMake(80, 60) : leafSize;
         *out = AXValueCreate(kAXValueCGSizeType, &size);
     } else if (CFEqual(attribute, kAXRoleDescriptionAttribute)) {
         *out = CFRetain(element == parent ? CFSTR("工具栏") : CFSTR("按钮"));
+    } else if (CFEqual(attribute, kAXRoleAttribute)) {
+        *out = CFRetain(element == root ? kAXWindowRole : element == parent || element == sibling ? kAXGroupRole : kAXButtonRole);
+    } else if (CFEqual(attribute, kAXChildrenAttribute)) {
+        if (!rootChildrenAvailable || (element != root && element != parent)) return kAXErrorNoValue;
+        if (element == root && overlappingBranches) {
+            const void *children[] = {reverseBranches ? sibling : parent, reverseBranches ? parent : sibling, root}; // Includes a descendant cycle.
+            *out = CFArrayCreate(NULL, children, 3, &kCFTypeArrayCallBacks);
+            return kAXErrorSuccess;
+        }
+        const void *child = element == root ? (const void *)parent : (const void *)leaf;
+        *out = CFArrayCreate(NULL, &child, 1, &kCFTypeArrayCallBacks);
     } else if (CFEqual(attribute, kAXParentAttribute)) {
+        if (element == root) return kAXErrorNoValue;
         *out = CFRetain(element == leaf ? duplicate : parent); // Includes a cyclic ancestor.
     } else return kAXErrorNoValue;
     return kAXErrorSuccess;
@@ -95,6 +115,153 @@ static void drainUntil(BOOL (^ready)(void)) {
     }
     assert(ready());
 }
+static void drainFor(NSTimeInterval duration) {
+    NSDate *until = [NSDate dateWithTimeIntervalSinceNow:duration];
+    while (until.timeIntervalSinceNow > 0) [[NSRunLoop currentRunLoop] runMode:NSDefaultRunLoopMode beforeDate:until];
+}
+
+@interface CIIPCaptureDwellView : CIIPCaptureSelectionView
+@property(nonatomic) BOOL forceReducedMotion;
+@end
+@implementation CIIPCaptureDwellView
+- (BOOL)reduceSelectionMotion { return self.forceReducedMotion; }
+@end
+static void renderDwellFrame(CALayer *layer, NSString *directory, NSString *name, CGFloat scale) {
+    if (!directory) return;
+    NSBitmapImageRep *rep = [[[NSBitmapImageRep alloc] initWithBitmapDataPlanes:NULL pixelsWide:layer.bounds.size.width * scale pixelsHigh:layer.bounds.size.height * scale bitsPerSample:8 samplesPerPixel:4 hasAlpha:YES isPlanar:NO colorSpaceName:NSDeviceRGBColorSpace bytesPerRow:0 bitsPerPixel:0] autorelease];
+    NSGraphicsContext *context = [NSGraphicsContext graphicsContextWithBitmapImageRep:rep];
+    CGContextScaleCTM(context.CGContext, scale, scale);
+    [(layer.presentationLayer ?: layer) renderInContext:context.CGContext];
+    assert([[rep representationUsingType:NSBitmapImageFileTypePNG properties:@{}] writeToFile:[directory stringByAppendingPathComponent:name] atomically:YES]);
+}
+static void testCaptureAncestorVisual(NSString *directory) {
+    Method mouseLocation = class_getClassMethod(NSEvent.class, @selector(mouseLocation));
+    IMP originalMouseLocation = method_setImplementation(mouseLocation, (IMP)fixtureMouseLocation);
+    containerRect = CGRectMake(-530, -90, 760, 440); leafOrigin = CGPointMake(-370, 110); leafSize = CGSizeMake(430, 18);
+    fixtureWindows = @[windowInfo(1002, 12, containerRect, 1)]; fixtureMouse = NSMakePoint(-350, 885);
+    hitGroup = hitContainer = rootChildrenAvailable = NO;
+    CIIPCapturePicker *picker = [[CIIPCapturePicker alloc] init]; picker.elementMode = YES; picker.desktopTop = 1000;
+    picker.selectionDuration = .12; picker.selectionCurve = [CAMediaTimingFunction functionWithControlPoints:.16 :1 :.3 :1];
+    NSPanel *panel = [[CIIPCaptureSelectionPanel alloc] initWithContentRect:NSMakeRect(-550, 630, 800, 480) styleMask:NSWindowStyleMaskBorderless | NSWindowStyleMaskNonactivatingPanel backing:NSBackingStoreBuffered defer:NO];
+    panel.releasedWhenClosed = NO;
+    CIIPCaptureDwellView *view = [[[CIIPCaptureDwellView alloc] initWithFrame:NSMakeRect(0, 0, 800, 480)] autorelease]; view.picker = picker; panel.contentView = view;
+    view.layer.backgroundColor = [NSColor colorWithWhite:.96 alpha:1].CGColor; // Synthetic page; never read the desktop image.
+    [picker.panels addObject:panel]; [panel orderFrontRegardless]; [panel display];
+    [picker sample]; drainUntil(^BOOL { return !picker.querying && !picker.pending; }); [CATransaction flush]; drainFor(.03);
+    CAShapeLayer *outline = (CAShapeLayer *)view.layer.sublayers[1];
+    CALayer *plate = view.layer.sublayers[2]; CATextLayer *dimensions = (CATextLayer *)plate.sublayers[0];
+    NSString *initialDimensions = [[[(NSAttributedString *)dimensions.string string] copy] autorelease];
+    renderDwellFrame(view.layer, directory, @"ancestor-line-start.png", panel.backingScaleFactor);
+    hitGroup = YES; fixtureMouse.y = 869; [picker sample]; drainUntil(^BOOL { return !picker.querying; });
+    [CATransaction flush]; drainFor(.033);
+    renderDwellFrame(view.layer, directory, @"ancestor-gap-33ms.png", panel.backingScaleFactor);
+    CGRect presented = CGPathGetBoundingBox([(CAShapeLayer *)outline.presentationLayer path]);
+    fprintf(stderr, "ancestor presentation gap height=%.2f label=%s\n", presented.size.height, [[(NSAttributedString *)dimensions.string string] UTF8String]);
+    assert(presented.size.height < 20 && !plate.hidden && [[(NSAttributedString *)dimensions.string string] isEqualToString:initialDimensions]);
+    drainFor(.017); hitGroup = NO; leafOrigin.y += 32; fixtureMouse.y = 853; [picker sample];
+    drainUntil(^BOOL { return !picker.querying && !picker.pending; }); [CATransaction flush]; drainFor(.033);
+    renderDwellFrame(view.layer, directory, @"ancestor-next-line-83ms.png", panel.backingScaleFactor);
+    assert(CGPathGetBoundingBox([(CAShapeLayer *)outline.presentationLayer path]).size.height < 20);
+    drainFor(.13);
+    // The stability policy survives reduced motion; only the eventual transition becomes immediate.
+    view.forceReducedMotion = YES; hitGroup = YES; fixtureMouse.y = 837; [picker sample];
+    drainUntil(^BOOL { return !picker.querying; }); assert(picker.pending);
+    assert(![outline animationForKey:@"path"] && CGPathGetBoundingBox(outline.path).size.height < 20);
+    drainUntil(^BOOL { return !picker.pending && !picker.querying; });
+    assert(CGRectEqualToRect(picker.rect, containerRect) && ![outline animationForKey:@"path"]);
+    renderDwellFrame(view.layer, directory, @"ancestor-settled-reduced-motion.png", panel.backingScaleFactor);
+    [picker finish:NO]; [panel release];
+    containerRect = CGRectMake(-200, 100, 200, 140); leafOrigin = CGPointMake(-160, 120); leafSize = CGSizeMake(40, 24); hitGroup = NO;
+    method_setImplementation(mouseLocation, originalMouseLocation);
+    puts("PASS ancestor native presentation: gap skipped, sibling line remains narrow, dimensions stable, reduced motion dwell");
+}
+
+static void testCaptureAncestorDwell(NSDictionary *window, NSString *directory) {
+    Method mouseLocation = class_getClassMethod(NSEvent.class, @selector(mouseLocation));
+    IMP originalMouseLocation = method_setImplementation(mouseLocation, (IMP)fixtureMouseLocation);
+    fixtureWindows = @[window]; fixtureMouse = NSMakePoint(-150, 870);
+    leafOrigin = CGPointMake(-160, 120); hitGroup = hitContainer = rootChildrenAvailable = NO;
+    CIIPCapturePicker *picker = [[CIIPCapturePicker alloc] init];
+    picker.elementMode = YES; picker.desktopTop = 1000;
+    [picker sample]; drainUntil(^BOOL { return !picker.querying && !picker.pending; });
+    CGRect leafRect = picker.rect;
+    // Crossing the gap between two leaves must not publish their large, valid ancestor for one sample.
+    hitGroup = YES; fixtureMouse.y = 853; [picker sample];
+    drainUntil(^BOOL { return !picker.querying; });
+    renderCaptureFrame(picker, directory, @"ancestor-gap.png");
+    fprintf(stderr, "ancestor gap pending=%d selected=%s\n", picker.pending, NSStringFromRect(NSRectFromCGRect(picker.rect)).UTF8String);
+    assert(picker.pending && CGRectEqualToRect(picker.rect, leafRect));
+    drainFor(.05);
+    hitGroup = NO; leafOrigin.y += 32; fixtureMouse.y = 838; [picker sample];
+    drainUntil(^BOOL { return !picker.querying && !picker.pending; });
+    assert(CGRectEqualToRect(picker.rect, (CGRect){leafOrigin, {40, 24}}));
+    unsigned int calls = atomic_load(&hitCount); drainFor(.15);
+    assert(atomic_load(&hitCount) == calls && CGRectEqualToRect(picker.rect, (CGRect){leafOrigin, {40, 24}}));
+
+    // Staying in the same ancestor, including micro-movement, confirms it after one dwell.
+    hitGroup = YES; fixtureMouse.y = 821; [picker sample]; drainUntil(^BOOL { return !picker.querying; });
+    assert(picker.pending); calls = atomic_load(&hitCount);
+    for (NSUInteger i = 0; i < 6; i++) {
+        drainFor(.03); fixtureMouse.x += .5; [picker sample]; drainUntil(^BOOL { return !picker.querying; });
+    }
+    assert(!picker.pending && CGRectEqualToRect(picker.rect, containerRect) && atomic_load(&hitCount) >= calls + 6);
+    hitGroup = NO; fixtureMouse.y = 838; [picker sample]; drainUntil(^BOOL { return !picker.querying; });
+    assert(!picker.pending && CGRectEqualToRect(picker.rect, (CGRect){leafOrigin, {40, 24}})); // Shrinking is immediate.
+
+    // Return/click cannot capture an ancestor that has not been displayed. Up explicitly reveals it.
+    hitGroup = YES; fixtureMouse.y = 821; [picker sample]; drainUntil(^BOOL { return !picker.querying; });
+    NSUInteger callbacks = callbackCount, beeps = beepCount;
+    [picker keyDown:key(36)]; assert(callbackCount == callbacks && beepCount == beeps + 1 && picker.pending);
+    CIIPCaptureSelectionView *gesture = [[CIIPCaptureSelectionView alloc] initWithFrame:NSMakeRect(0, 0, 10, 10)]; gesture.picker = picker;
+    NSEvent *down = [NSEvent mouseEventWithType:NSEventTypeLeftMouseDown location:NSZeroPoint modifierFlags:0 timestamp:0 windowNumber:0 context:nil eventNumber:1 clickCount:1 pressure:1];
+    NSEvent *up = [NSEvent mouseEventWithType:NSEventTypeLeftMouseUp location:NSZeroPoint modifierFlags:0 timestamp:0 windowNumber:0 context:nil eventNumber:2 clickCount:1 pressure:0];
+    [gesture mouseDown:down]; [gesture mouseUp:up]; [gesture release];
+    assert(callbackCount == callbacks && beepCount == beeps + 2 && picker.pending);
+    [picker keyDown:key(126)];
+    assert(!picker.pending && CGRectEqualToRect(picker.rect, containerRect) && callbackCount == callbacks);
+    calls = atomic_load(&hitCount); drainFor(.15); assert(atomic_load(&hitCount) == calls);
+
+    // The dwell timer samples the real pointer, including a move not yet seen by the regular timer.
+    hitGroup = NO; fixtureMouse.y = 838; [picker sample]; drainUntil(^BOOL { return !picker.querying; });
+    hitGroup = YES; fixtureMouse.y = 821; [picker sample]; drainUntil(^BOOL { return !picker.querying; }); assert(picker.pending);
+    hitGroup = NO; leafOrigin.y -= 32; fixtureMouse.y = 870; // Intentionally no sample call.
+    drainUntil(^BOOL { return !picker.pending && !picker.querying; });
+    assert(CGRectEqualToRect(picker.rect, (CGRect){leafOrigin, {40, 24}}));
+
+    // A new window invalidates both the proposal and its scheduled verification.
+    hitGroup = YES; fixtureMouse.y = 853; [picker sample]; drainUntil(^BOOL { return !picker.querying; }); assert(picker.pending);
+    fixtureWindows = @[windowInfo(1003, 13, containerRect, 1)]; hitGroup = NO; fixtureMouse.x += 1;
+    [picker sample]; drainUntil(^BOOL { return !picker.pending && !picker.querying; });
+    calls = atomic_load(&hitCount); drainFor(.15);
+    assert(atomic_load(&hitCount) == calls && [picker.targetWindow[(id)kCGWindowNumber] intValue] == 13);
+
+    // Leaving and returning to an ancestor inside one larger window starts a new dwell.
+    fixtureWindows = @[windowInfo(1002, 12, CGRectMake(-240, 80, 300, 200), 1)]; fixtureMouse = NSMakePoint(-150, 870);
+    [picker sample]; drainUntil(^BOOL { return !picker.pending && !picker.querying; });
+    hitGroup = YES; fixtureMouse.y = 853; [picker sample]; drainUntil(^BOOL { return !picker.querying; }); assert(picker.pending);
+    hitGate = dispatch_semaphore_create(0); hitEntered = dispatch_semaphore_create(0);
+    fixtureMouse = NSMakePoint(-220, 870); [picker sample];
+    assert(dispatch_semaphore_wait(hitEntered, dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC)) == 0);
+    drainFor(.13); fixtureMouse = NSMakePoint(-150, 853); [picker sample]; calls = atomic_load(&hitCount);
+    dispatch_semaphore_signal(hitGate); drainUntil(^BOOL { return atomic_load(&hitCount) == calls + 1; });
+    dispatch_semaphore_signal(hitGate); drainUntil(^BOOL { return !picker.querying; });
+    assert(picker.pending && CGRectEqualToRect(picker.rect, (CGRect){leafOrigin, {40, 24}}));
+    dispatch_release(hitGate); dispatch_release(hitEntered); hitGate = hitEntered = nil;
+    drainUntil(^BOOL { return !picker.pending && !picker.querying; });
+    assert(CGRectEqualToRect(picker.rect, containerRect));
+    [picker keyDown:key(36)]; assert(callbackCount == callbacks + 1 && CGRectEqualToRect(callbackRect, containerRect));
+
+    // Cancel clears the proposal; its delayed callback must not issue another AX request.
+    fixtureWindows = @[window]; hitGroup = NO; fixtureMouse = NSMakePoint(-150, 870);
+    picker = [[CIIPCapturePicker alloc] init]; picker.elementMode = YES; picker.desktopTop = 1000;
+    [picker sample]; drainUntil(^BOOL { return !picker.pending && !picker.querying; });
+    hitGroup = YES; fixtureMouse.y = 853; [picker sample]; drainUntil(^BOOL { return !picker.querying; }); assert(picker.pending);
+    calls = atomic_load(&hitCount); [picker keyDown:key(53)]; drainFor(.15);
+    assert(atomic_load(&hitCount) == calls && callbackCount == callbacks + 2 && CGRectIsEmpty(callbackRect));
+    leafOrigin = CGPointMake(-160, 120); hitGroup = NO;
+    method_setImplementation(mouseLocation, originalMouseLocation);
+    puts("PASS ancestor dwell: gap, sibling, micro-movement, stationary verification, click/Return, Up, physical pointer, window, leave/return, cancellation");
+}
 static void testCaptureSelectionRefresh(NSDictionary *window, NSString *directory) {
     Method mouseLocation = class_getClassMethod(NSEvent.class, @selector(mouseLocation));
     IMP originalMouseLocation = method_setImplementation(mouseLocation, (IMP)fixtureMouseLocation);
@@ -107,6 +274,22 @@ static void testCaptureSelectionRefresh(NSDictionary *window, NSString *director
     [picker keyDown:key(126)];
     CGRect selected = picker.rect;
     renderCaptureFrame(picker, directory, @"resolved.png");
+
+    // Lazy providers may return a childless Group while its already-resolved leaf remains live.
+    hitGroup = YES; fixtureMouse.x += 1; [picker sample];
+    drainUntil(^BOOL { return !picker.querying; });
+    assert(!picker.pending && picker.elementIndex == 1);
+    assert(NSEqualRects([picker.elements[0][@"rect"] rectValue], NSMakeRect(-160, 120, 40, 24)));
+    [picker keyDown:key(125)];
+    renderCaptureFrame(picker, directory, @"group-warmup.png");
+    assert(CGRectEqualToRect(picker.rect, CGRectMake(-160, 120, 40, 24)));
+    // A moved/removed leaf must never be kept merely because its old rectangle still contains the pointer.
+    leafOrigin.x += 80; fixtureMouse.x += 1; [picker sample];
+    drainUntil(^BOOL { return !picker.querying && !picker.pending; });
+    assert(picker.elements.count == 1 && CGRectEqualToRect(picker.rect, selected));
+    leafOrigin.x -= 80; hitGroup = NO; fixtureMouse.x = -150; [picker sample];
+    drainUntil(^BOOL { return !picker.querying; }); [picker keyDown:key(126)];
+
     hitGate = dispatch_semaphore_create(0); hitEntered = dispatch_semaphore_create(0);
     fixtureMouse.x += 1; [picker sample];
     assert(dispatch_semaphore_wait(hitEntered, dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC)) == 0);
@@ -120,9 +303,22 @@ static void testCaptureSelectionRefresh(NSDictionary *window, NSString *director
     assert(!picker.pending && picker.elementIndex == 1 && CGRectEqualToRect(picker.rect, selected));
     renderCaptureFrame(picker, directory, @"refreshed.png");
 
-    // Slow AX response while moving continuously: coalesce to the latest point without blank frames.
+    // A completed hit remains useful after micro-movement inside its innermost element.
+    // Show it before the pointer stops, then recheck the exact latest point before allowing confirmation.
     unsigned int calls = atomic_load(&hitCount);
+    picker.elements = nil; picker.elementIndex = 0; picker.rect = selected;
     fixtureMouse.x += 1; [picker sample];
+    assert(dispatch_semaphore_wait(hitEntered, dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC)) == 0);
+    fixtureMouse.x += 1; [picker sample];
+    dispatch_semaphore_signal(hitGate);
+    drainUntil(^BOOL { return atomic_load(&hitCount) == calls + 2; });
+    assert(picker.querying && picker.pending && CGRectEqualToRect(picker.rect, CGRectMake(-160, 120, 40, 24)));
+    dispatch_semaphore_signal(hitGate); drainUntil(^BOOL { return !picker.querying; });
+    assert(!picker.pending); [picker keyDown:key(126)];
+
+    // Slow AX response while moving continuously: coalesce to the latest point without blank frames.
+    calls = atomic_load(&hitCount);
+    fixtureMouse.x = -122; [picker sample];
     assert(dispatch_semaphore_wait(hitEntered, dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC)) == 0);
     for (NSUInteger i = 0; i < 8; i++) {
         fixtureMouse.x += 1; [picker sample];
@@ -135,8 +331,32 @@ static void testCaptureSelectionRefresh(NSDictionary *window, NSString *director
     assert(picker.pending && CGRectEqualToRect(picker.rect, selected));
     dispatch_semaphore_signal(hitGate);
     drainUntil(^BOOL { return !picker.querying; });
-    assert(!picker.pending && picker.elementIndex == 1 && CGRectEqualToRect(picker.rect, selected));
+    assert(!picker.pending && picker.elementIndex == 0 && CGRectEqualToRect(picker.rect, selected));
     dispatch_release(hitGate); dispatch_release(hitEntered); hitGate = hitEntered = nil;
+    fixtureMouse.x = -150; [picker sample]; drainUntil(^BOOL { return !picker.querying; });
+    [picker keyDown:key(126)];
+
+    // A temporary AX failure must preserve the resolved frame and retry even without another mouse move.
+    transientFailure = YES; fixtureMouse.x += 1; [picker sample];
+    drainUntil(^BOOL { return !picker.querying; });
+    assert(picker.pending && picker.elementIndex == 1 && CGRectEqualToRect(picker.rect, selected));
+    transientFailure = NO;
+    drainUntil(^BOOL { return !picker.querying && !picker.pending; });
+    assert(picker.elementIndex == 1 && CGRectEqualToRect(picker.rect, selected));
+
+    // A container-only reply during AX warm-up must not briefly expand or close the existing hole.
+    hitContainer = YES; rootChildrenAvailable = NO; fixtureMouse.x += 1; [picker sample];
+    drainUntil(^BOOL { return !picker.querying; });
+    assert(picker.pending && CGRectEqualToRect(picker.rect, selected));
+    rootChildrenAvailable = YES;
+    drainUntil(^BOOL { return !picker.querying && !picker.pending; });
+    assert(picker.elementIndex == 1 && CGRectEqualToRect(picker.rect, selected));
+    rootChildrenAvailable = NO; fixtureMouse.x += 1; [picker sample];
+    drainUntil(^BOOL { return !picker.querying && !picker.pending; });
+    assert(!usableCaptureRect(picker.rect) && picker.unresolvedRetries == 3);
+    hitContainer = NO; fixtureMouse.x += 1; [picker sample];
+    drainUntil(^BOOL { return !picker.querying && !picker.pending; });
+    assert(picker.unresolvedRetries == 0 && usableCaptureRect(picker.rect));
 
     // A different leaf resets hierarchy; an unsupported target clears after resolution.
     leafOrigin = CGPointMake(-110, 120); fixtureMouse.x = -100; [picker sample];
@@ -182,7 +402,7 @@ static void testCaptureSelectionRefresh(NSDictionary *window, NSString *director
 int main(int argc, const char **argv) {
     @autoreleasepool {
         [NSApplication sharedApplication];
-        leaf = AXUIElementCreateApplication(1111); duplicate = AXUIElementCreateApplication(2222); parent = AXUIElementCreateApplication(3333);
+        leaf = AXUIElementCreateApplication(1111); duplicate = AXUIElementCreateApplication(2222); parent = AXUIElementCreateApplication(3333); root = AXUIElementCreateApplication(4444); sibling = AXUIElementCreateApplication(5555);
         CGRect target = CGRectMake(-200, 100, 200, 140);
         NSDictionary *own = windowInfo(getpid(), 10, target, 1), *hidden = windowInfo(1001, 11, target, 0), *other = windowInfo(1002, 12, target, 1);
         fixtureWindows = @[own, hidden, other];
@@ -196,6 +416,49 @@ int main(int argc, const char **argv) {
         assert(elements.count == 2); // Duplicate rects and cyclic parents do not repeat candidates.
         assert(NSEqualRects([elements[0][@"rect"] rectValue], NSMakeRect(-160, 120, 40, 24)));
         assert(NSEqualRects([elements[1][@"rect"] rectValue], NSMakeRect(-180, 110, 100, 80)));
+        // Overlapping geometry alone cannot justify retaining an old element from another branch.
+        NSArray *unrelated = @[@{@"rect":[NSValue valueWithRect:NSRectFromCGRect(target)], @"label":@"容器", @"element":(id)root}];
+        assert(captureElementsKeepingLeaf(unrelated, elements, CGPointMake(-150, 130), target) == unrelated);
+        hitContainer = YES; rootChildrenAvailable = YES;
+        NSArray *containerHit = captureElementsAtPoint(1002, CGPointMake(-150, 130), target);
+        if (containerHit.count && argc > 1) {
+            CIIPCapturePicker *preview = [[CIIPCapturePicker alloc] init]; preview.elementMode = YES; preview.desktopTop = 1000;
+            preview.rect = NSRectToCGRect([containerHit[0][@"rect"] rectValue]);
+            renderCaptureFrame(preview, [NSString stringWithUTF8String:argv[1]], @"container-hit.png");
+            [preview release];
+        }
+        if (containerHit.count == 0 || !NSEqualRects([containerHit[0][@"rect"] rectValue], NSMakeRect(-160, 120, 40, 24))) fprintf(stderr, "container hit: first=%s candidates=%lu\n", [NSStringFromRect([containerHit.firstObject[@"rect"] rectValue]) UTF8String], (unsigned long)containerHit.count);
+        assert(containerHit.count > 0 && NSEqualRects([containerHit[0][@"rect"] rectValue], NSMakeRect(-160, 120, 40, 24)));
+        // A smaller direct sibling must not hide a still smaller descendant in another branch.
+        overlappingBranches = YES;
+        for (NSUInteger sameBounds = 0; sameBounds < 3; sameBounds++) {
+            sameBoundsSibling = sameBounds == 1; equalAreaSibling = sameBounds == 2;
+            for (NSUInteger reverse = 0; reverse < 2; reverse++) {
+                reverseBranches = reverse != 0;
+                NSArray *branchHit = captureElementsAtPoint(1002, CGPointMake(-150, 130), target);
+                if (branchHit.count && argc > 1) {
+                    CIIPCapturePicker *preview = [[CIIPCapturePicker alloc] init]; preview.elementMode = YES; preview.desktopTop = 1000;
+                    preview.rect = NSRectToCGRect([branchHit[0][@"rect"] rectValue]);
+                    renderCaptureFrame(preview, [NSString stringWithUTF8String:argv[1]], [NSString stringWithFormat:@"branches-%lu-%lu.png", (unsigned long)sameBounds, (unsigned long)reverse]);
+                    [preview release];
+                }
+                fprintf(stderr, "AX branches same-bounds=%lu reversed=%lu first=%s\n", (unsigned long)sameBounds, (unsigned long)reverse, NSStringFromRect([branchHit.firstObject[@"rect"] rectValue]).UTF8String);
+                NSRect expected = equalAreaSibling ? NSMakeRect(-165, 115, 40, 24) : NSMakeRect(-160, 120, 40, 24);
+                assert(branchHit.count > 0 && NSEqualRects([branchHit[0][@"rect"] rectValue], expected));
+            }
+        }
+        overlappingBranches = sameBoundsSibling = equalAreaSibling = reverseBranches = NO;
+        sameFrameDescendants = YES;
+        NSArray *sameFrameHit = captureElementsAtPoint(1002, CGPointMake(-150, 130), target);
+        sameFrameDescendants = NO; framelessParent = YES;
+        NSArray *framelessHit = captureElementsAtPoint(1002, CGPointMake(-150, 130), target);
+        framelessParent = NO;
+        fprintf(stderr, "AX boundaries same-frame=%lu frameless-first=%s\n", (unsigned long)sameFrameHit.count, NSStringFromRect([framelessHit.firstObject[@"rect"] rectValue]).UTF8String);
+        assert(sameFrameHit.count == 1 && NSEqualRects([sameFrameHit[0][@"rect"] rectValue], NSRectFromCGRect(target)));
+        assert(framelessHit.count > 0 && NSEqualRects([framelessHit[0][@"rect"] rectValue], NSMakeRect(-160, 120, 40, 24)));
+        rootChildrenAvailable = NO;
+        assert(captureElementsAtPoint(1002, CGPointMake(-150, 130), target).count == 0);
+        hitContainer = NO; rootChildrenAvailable = NO;
         unavailable = YES;
         assert(captureElementsAtPoint(1002, CGPointMake(-150, 130), target).count == 0);
         unavailable = NO;
@@ -250,7 +513,9 @@ int main(int argc, const char **argv) {
             }
         }
         [panel close]; [panel release]; [picker release];
-        CFRelease(leaf); CFRelease(duplicate); CFRelease(parent);
+        testCaptureAncestorVisual(argc > 1 ? [NSString stringWithUTF8String:argv[1]] : nil);
+        testCaptureAncestorDwell(other, argc > 1 ? [NSString stringWithUTF8String:argv[1]] : nil);
+        CFRelease(leaf); CFRelease(duplicate); CFRelease(parent); CFRelease(root); CFRelease(sibling);
         puts("PASS capture selection: window identity, AX bounds, clipping, hierarchy, unavailable target, cancellation, callback, native drawing");
     }
 }

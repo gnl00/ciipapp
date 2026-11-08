@@ -25,3 +25,15 @@ func TestEditorCommandRoutingFollowsQuickTransfer(t *testing.T) {
 		t.Fatal("cancelled handoff must restore the quick document as command target")
 	}
 }
+
+func TestQuickLoadingWaitsForReadyBeforeReopen(t *testing.T) {
+	// An unready session must be handled without touching its native window.
+	service := &CaptureService{quickState: quickState{quick: &quickSession{}}}
+	if !service.focusQuickEditor() {
+		t.Fatal("a loading quick editor must retain the reopen request until ready")
+	}
+	service.quick.transferToken = "transfer"
+	if service.focusQuickEditor() {
+		t.Fatal("a quick editor transferring to the full editor must not handle reopen")
+	}
+}

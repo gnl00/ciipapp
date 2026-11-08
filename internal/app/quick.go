@@ -8,6 +8,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"ciip/frontend"
+
 	"github.com/egoist/mygo"
 )
 
@@ -17,12 +19,14 @@ type quickState struct {
 	quickSequence atomic.Uint64
 }
 type quickSession struct {
-	window        *mygo.Window
-	image         *ImageData
-	placement     QuickPlacement
-	token         string
-	transferToken string
-	ready         bool
+	window         *mygo.Window
+	image          *ImageData
+	placement      QuickPlacement
+	token          string
+	transferToken  string
+	ready          bool
+	motionDuration float64
+	motionCurve    [4]float64
 }
 type QuickCapture struct {
 	Image         *ImageData     `json:"image"`
@@ -39,15 +43,25 @@ func (s *CaptureService) focusQuickEditor() bool {
 	s.quickMu.Lock()
 	current := s.quick
 	transferring := current != nil && current.transferToken != ""
+	ready := current != nil && current.ready
 	s.quickMu.Unlock()
 	if current == nil || transferring {
 		return false
+	}
+	// Reopen/activation may arrive while the new WebView is still loading.
+	// Let QuickReady reveal it after the image has painted.
+	if !ready {
+		return true
 	}
 	current.window.Show()
 	current.window.Focus()
 	return true
 }
 func (s *CaptureService) presentQuick(image *ImageData, placement QuickPlacement) error {
+	duration, curve, err := nativePanelMotion(frontend.TokensCSS, "--motion-panel-in")
+	if err != nil {
+		return err
+	}
 	s.quickMu.Lock()
 	if s.quick != nil {
 		s.quickMu.Unlock()
@@ -65,7 +79,7 @@ func (s *CaptureService) presentQuick(image *ImageData, placement QuickPlacement
 	win.SetBounds(placement.Panel)
 	maintainQuickMaterial(win)
 	s.quickMu.Lock()
-	s.quick = &quickSession{window: win, image: image, placement: placement, token: token}
+	s.quick = &quickSession{window: win, image: image, placement: placement, token: token, motionDuration: duration, motionCurve: curve}
 	s.quickMu.Unlock()
 	win.OnClosed(func() {
 		if current := s.detachQuickSession(token); current != nil {
@@ -153,10 +167,13 @@ func (s *CaptureService) QuickReady(ctx context.Context) error {
 		s.quickMu.Unlock()
 		return errors.New("快捷编辑已关闭")
 	}
+	if current.ready {
+		s.quickMu.Unlock()
+		return nil
+	}
 	current.ready = true
 	s.quickMu.Unlock()
-	current.window.Show()
-	current.window.Focus()
+	showQuickWindow(current.window, current.motionDuration, current.motionCurve)
 	return nil
 }
 func (s *CaptureService) CloseQuick(ctx context.Context) error {
