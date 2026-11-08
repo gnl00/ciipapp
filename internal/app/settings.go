@@ -257,19 +257,7 @@ func (s *CaptureService) GetAppInfo() map[string]any {
 		detail = "本机离线识别 · " + path
 	}
 	engines = append(engines, map[string]any{"id": "tesseract", "name": "Tesseract", "available": err == nil, "detail": detail})
-	return map[string]any{"name": "ciip", "version": mygo.App.Version(), "platform": runtime.GOOS, "architecture": runtime.GOARCH, "appPath": nativeApplicationPath(), "screenPermission": nativeScreenPermission(), "engines": engines, "updateConfigured": false}
+	return map[string]any{"name": "ciip", "version": mygo.App.Version(), "platform": runtime.GOOS, "architecture": runtime.GOARCH, "appPath": nativeApplicationPath(), "screenPermission": nativeScreenPermission(), "engines": engines, "updateConfigured": true}
 }
 func (s *CaptureService) ShowPermissionGuide() error { return showNativePermissionGuide() }
 func (s *CaptureService) RevealApplication() error   { return revealNativeApplication() }
-
-type UpdateResult struct {
-	Status         string `json:"status"`
-	CurrentVersion string `json:"currentVersion"`
-	LatestVersion  string `json:"latestVersion"`
-	URL            string `json:"url"`
-	Message        string `json:"message"`
-}
-
-func (s *CaptureService) CheckForUpdates() UpdateResult {
-	return UpdateResult{Status: "not_configured", CurrentVersion: mygo.App.Version(), Message: "更新功能已预留，尚未接入发布服务"}
-}

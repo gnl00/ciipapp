@@ -14,10 +14,11 @@ export interface OCRLine extends Rect {text:string;confidence?:number}
 export interface OCRResult {width:number;height:number;text:string;lines:OCRLine[]}
 export interface AppInfo {version:string;platform:string;architecture:string;screenPermission:boolean|'granted'|'denied';engines:{id:string;name:string;detail:string;available:boolean}[]}
 export interface Status {shortcuts:ShortcutStatus;version:string;captureMode:'quick'|'editor'}
+export interface UpdateResult {status:'available'|'up_to_date'|'unavailable';currentVersion:string;latestVersion:string;url:string;message:string}
 export interface NativeResponses {
  GetPreferences:Preferences;SetPreferences:Preferences;GetAppInfo:AppInfo;GetShortcutStatus:ShortcutStatus;
  GetStatus:Status;BeginShortcutRecording:ShortcutStatus;EndShortcutRecording:ShortcutStatus;
- CheckForUpdates:{message:string;status:string};GetQuickCapture:QuickCapture;GetQuickBounds:ScreenRect;TransformQuickWindow:ScreenRect;
+ CheckForUpdates:UpdateResult;OpenUpdatePage:void;GetQuickCapture:QuickCapture;GetQuickBounds:ScreenRect;TransformQuickWindow:ScreenRect;
  Capture:CaptureImage|null;OpenImage:CaptureImage|null;RecognizeText:OCRResult;SaveImage:string|null;PinImage:string;
  UpdatePin:void;CopyImage:void;CopyText:void;CloseEditor:void;CloseQuick:void;QuickReady:void;ShowEditor:void;
  HidePin:void;RestorePin:void;ClosePin:void;EditPin:void;ResizePin:void;RefreshPinShadow:void;

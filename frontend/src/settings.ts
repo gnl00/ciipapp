@@ -34,10 +34,11 @@ export function initializeSettings({call,native,beforeOpen,onOCRChange}:{call:Na
       <div class="setting-group" id="vision-mode-row">${choices('ocrMode','Apple Vision 模式',[['accurate','精确'],['fast','快速']])}</div><p class="settings-footnote">Tesseract 使用本机已安装的语言数据。切换引擎后，下次识别使用新设置。</p></section>
     <section data-page="permissions" hidden><h3>屏幕录制权限</h3><p class="settings-intro">用于区域、窗口、元素和全屏截图。打开本地图片不需要此权限。</p><div class="permission-status"><span id="permission-indicator"></span><div><strong id="permission-state">正在读取…</strong><p>授权由 macOS 管理</p></div><button id="permissions-refresh" class="settings-secondary">刷新</button></div>
       <div class="permission-guide-card"><div class="mini-app-mark">ciip<span>·</span></div><div><strong>把 ciip 添加到系统权限列表</strong><p>打开授权引导，拖动应用图标到系统设置中的列表，再开启权限。</p></div></div><div class="settings-actions"><button id="permission-guide" class="settings-primary">打开授权引导</button><button id="permission-settings" class="settings-secondary">打开系统设置</button></div><button id="reveal-application" class="settings-link">在 Finder 中显示 ciip</button><p class="settings-footnote">如果系统列表不接受拖入，请点击列表的「＋」选择 ciip。授权后按 macOS 提示重新打开应用。</p><p class="settings-footnote">元素截图还需要辅助功能权限，首次使用时会提示授权。请在系统设置 → 隐私与安全性 → 辅助功能中允许 ciip。</p></section>
-    <section data-page="about" hidden><div class="about-brand"><div class="about-app-mark">ciip<span>·</span></div><h3>ciip</h3><p>截下来，贴在手边。</p><span id="app-version">正在读取版本…</span></div><dl class="about-details"><div><dt>运行环境</dt><dd id="app-platform"></dd></div><div><dt>文字识别</dt><dd>本机离线</dd></div></dl><button id="check-updates" class="settings-secondary">检查更新</button><p id="update-result" class="settings-footnote" role="status">更新入口已预留，暂未接入发布服务。</p></section>
+    <section data-page="about" hidden><div class="about-brand"><div class="about-app-mark">ciip<span>·</span></div><h3>ciip</h3><p>截下来，贴在手边。</p><span id="app-version">正在读取版本…</span></div><dl class="about-details"><div><dt>运行环境</dt><dd id="app-platform"></dd></div><div><dt>文字识别</dt><dd>本机离线</dd></div></dl><div class="settings-actions update-actions"><button id="check-updates" class="settings-secondary">检查更新</button><button id="update-download" class="settings-primary" hidden>前往 GitHub 下载</button></div><p id="update-result" class="settings-footnote" role="status" aria-live="polite">手动检查 GitHub 上的最新正式版本。</p></section>
     <p id="settings-feedback" class="settings-feedback" role="status" aria-live="polite"></p></div></div>`;
   document.body.append(dialog);
   let preferences:Preferences|null=null,info:AppInfo|null=null,shortcutStatus:ShortcutStatus={},pending=false,loading=0,returnFocus:HTMLElement|null=null,recording:ShortcutAction|null=null,recordingTimer:ReturnType<typeof setTimeout>|undefined,recordingRequest=0,recordingTasks=0,visibilityGeneration=0,closing:Promise<void>|null=null;
+  let checkingUpdates=false,updateRequest=0,updateAvailable=false;
   const $=<T extends HTMLElement=HTMLElement>(id:string)=>dialog.querySelector<T>('#'+id)!;
   const feedback=(text:string,error=false)=>{$('settings-feedback').textContent=text;$('settings-feedback').classList.toggle('error',error);};
   function selectTab(tab:string) {
@@ -48,7 +49,7 @@ export function initializeSettings({call,native,beforeOpen,onOCRChange}:{call:Na
     dialog.querySelector<HTMLElement>('.settings-content')!.scrollTop=0;
   }
   function render() {
-    const locked=pending||recordingTasks>0;
+    const locked=pending||checkingUpdates||recordingTasks>0;
     dialog.querySelectorAll<HTMLInputElement|HTMLButtonElement>('[data-setting]').forEach(input=>{
       const value=preferences?.[input.dataset.setting as keyof Preferences];
       if(input instanceof HTMLInputElement)input.checked=!!value;
@@ -68,7 +69,10 @@ export function initializeSettings({call,native,beforeOpen,onOCRChange}:{call:Na
     $<HTMLButtonElement>('shortcuts-reset').disabled=locked||!native||!preferences||!!recording;
     $('shortcut-recording-state').textContent=recording?'Esc 取消录制':'';
     $('vision-mode-row').hidden=preferences?.ocrEngine!=='vision';
-    for(const id of ['permission-guide','permission-settings','reveal-application','permissions-refresh','check-updates'])$<HTMLButtonElement>(id).disabled=locked||!native;
+    for(const id of ['permission-guide','permission-settings','reveal-application','permissions-refresh','check-updates','update-download'])$<HTMLButtonElement>(id).disabled=locked||!native;
+    $('update-download').hidden=!updateAvailable;
+    $<HTMLButtonElement>('check-updates').disabled ||= !!recording;
+    $('check-updates').textContent=checkingUpdates?'正在检查…':'检查更新';
     if(info) {
       $('app-version').textContent=`版本 ${info.version}`;
       $('app-platform').textContent=[info.platform==='darwin'?'macOS':info.platform,info.architecture==='arm64'?'Apple Silicon':info.architecture].filter(Boolean).join(' · ');
@@ -95,7 +99,7 @@ export function initializeSettings({call,native,beforeOpen,onOCRChange}:{call:Na
     finally{if(ticket===loading){pending=false;render();}}
   }
   async function save(key:keyof Preferences,value:Preferences[keyof Preferences]) {
-    if(pending||recordingTasks||!preferences)return;
+    if(pending||checkingUpdates||recordingTasks||!preferences)return;
     const previous=preferences;let saved=false;pending=true;preferences={...preferences,[key]:value};render();feedback('正在保存…');
     try {preferences=await call('SetPreferences',preferences);saved=true;window.dispatchEvent(new CustomEvent('ciip:preferences',{detail:preferences}));if(key==='shortcuts'){shortcutStatus=await call('GetShortcutStatus');window.dispatchEvent(new CustomEvent('ciip:shortcuts-changed'));}feedback('已保存');if(key==='ocrEngine'||key==='ocrMode')onOCRChange?.();}
     catch(error){if(!saved)preferences=previous;feedback((saved?'设置已保存，但状态刷新失败：':'')+(errorMessage(error)),true);}
@@ -110,7 +114,7 @@ export function initializeSettings({call,native,beforeOpen,onOCRChange}:{call:Na
     return true;
   }
   async function beginRecording(action:ShortcutAction) {
-    if(pending||recordingTasks||!preferences||!native)return;
+    if(pending||checkingUpdates||recordingTasks||!preferences||!native)return;
     if(recording===action){await endRecording();return;}
     if(recording&&!await endRecording())return;
     const ticket=++recordingRequest;recordingTasks++;render();feedback('');
@@ -136,10 +140,22 @@ export function initializeSettings({call,native,beforeOpen,onOCRChange}:{call:Na
     await save('shortcuts',{...preferences!.shortcuts,[action]:value});
   }
   async function action(method:NativeMethod) {
-    if(pending||recordingTasks||!native)return;pending=true;render();feedback('');
-    try {const result=await call(method);if(method==='CheckForUpdates')$('update-result').textContent=(result as {message?:string})?.message||'更新服务尚未配置。';}
+    if(pending||checkingUpdates||recordingTasks||!native)return;pending=true;render();feedback('');
+    try {await call(method);}
     catch(error){feedback(errorMessage(error),true);}
     finally{pending=false;render();}
+  }
+  async function checkForUpdates() {
+    if(pending||checkingUpdates||recording||recordingTasks||!native)return;
+    const ticket=++updateRequest;checkingUpdates=true;updateAvailable=false;render();feedback('');
+    $('update-result').textContent='正在检查 …';$('update-result').classList.remove('error');
+    try {
+      const result=await call('CheckForUpdates');
+      if(ticket!==updateRequest)return;
+      updateAvailable=result.status==='available';$('update-result').textContent=result.message;
+    }catch(error){
+      if(ticket===updateRequest){$('update-result').textContent=errorMessage(error);$('update-result').classList.add('error');}
+    }finally{if(ticket===updateRequest){checkingUpdates=false;render();}}
   }
   async function show(tab='general') {
     const opening=!dialog.open,reopening=!!closing;visibilityGeneration++;closing=null;
@@ -150,7 +166,8 @@ export function initializeSettings({call,native,beforeOpen,onOCRChange}:{call:Na
   function close(){
     if(!dialog.open)return Promise.resolve();
     if(closing)return closing;
-    const ticket=++visibilityGeneration;loading++;
+    const ticket=++visibilityGeneration;loading++;updateRequest++;
+    if(checkingUpdates){checkingUpdates=false;$('update-result').textContent='手动检查 GitHub 上的最新正式版本。';}
     closing=(async()=>{
       try {
         await endRecording();if(ticket!==visibilityGeneration)return;
@@ -174,7 +191,8 @@ export function initializeSettings({call,native,beforeOpen,onOCRChange}:{call:Na
   dialog.addEventListener('keydown',event=>{if(recording)void recordKey(event);},true);
   window.addEventListener('blur',()=>{if(recording||recordingTasks)void endRecording('录制已取消，原快捷键已恢复');});
   document.addEventListener('visibilitychange',()=>{if(document.hidden&&(recording||recordingTasks))void endRecording();});
-  for(const [id,method]of ([['permission-guide','ShowPermissionGuide'],['permission-settings','OpenScreenSettings'],['reveal-application','RevealApplication'],['check-updates','CheckForUpdates']] as const))$(id).onclick=()=>action(method);
+  for(const [id,method]of ([['permission-guide','ShowPermissionGuide'],['permission-settings','OpenScreenSettings'],['reveal-application','RevealApplication'],['update-download','OpenUpdatePage']] as const))$(id).onclick=()=>action(method);
+  $('check-updates').onclick=()=>checkForUpdates();
   window.addEventListener('ciip:settings',event=>void show(event.detail?.tab));
   document.addEventListener('keydown',event=>{if(recording)return;if((event.metaKey||event.ctrlKey)&&event.key===','){event.preventDefault();event.stopImmediatePropagation();void show();}},true);
   return {show,get open(){return dialog.open;}};

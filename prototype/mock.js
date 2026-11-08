@@ -79,7 +79,8 @@ window.mygo = {call:async (method, ...args) => {
     name:'ciip', version:'0.10.0', platform:'darwin', architecture:'arm64', screenPermission:false,
     engines:[{id:'vision', name:'Apple Vision', available:true, detail:'系统离线识别'}, {id:'tesseract', name:'Tesseract', available:false, detail:'未安装'}],
   };
-  if (name === 'CheckForUpdates') return {status:'not_configured', message:'更新功能已预留，尚未接入发布服务'};
+  if (name === 'CheckForUpdates') return {status:'up_to_date', currentVersion:'0.10.0', latestVersion:'0.10.0', url:'', message:'原型模拟：当前版本 0.10.0 已是最新正式版本。'};
+  if (name === 'OpenUpdatePage') throw Error('前往 GitHub 下载请在 ciip 原生应用中操作');
   if (name === 'CopyImage') {
     recordExport('复制', args[0]);
     return null;

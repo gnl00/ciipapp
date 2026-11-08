@@ -35,6 +35,15 @@ test('element capture has an unbound shortcut and does not simulate native selec
   await assert.rejects(call('CaptureService.Capture', 'element'), /原生应用/);
 });
 
+test('update preview identifies its simulation and keeps external navigation native-only', async () => {
+  const {call} = createBridge();
+  const result = await call('CaptureService.CheckForUpdates');
+  assert.equal(result.status, 'up_to_date');
+  assert.equal(result.currentVersion, result.latestVersion);
+  assert.match(result.message, /原型模拟/);
+  await assert.rejects(call('CaptureService.OpenUpdatePage'), /原生应用/);
+});
+
 test('copy and save receipts report PNG source dimensions rather than viewport dimensions', async () => {
   const {call, messages} = createBridge();
   await call('CaptureService.CopyImage', pngHeader(6000, 4000));

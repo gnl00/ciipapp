@@ -50,6 +50,12 @@ DMG 内有 `ciip.app` 和指向 Applications 的快捷方式；ZIP 是同一应�
 
 当前工作流使用 MyGo 默认的 **ad hoc 签名**，没有 Developer ID 签名或 Apple 公证，也没有必填签名 secrets。`codesign` 验证通过表示 bundle 签名完整，不表示已经公证。macOS Gatekeeper 可能阻止首次打开；确认下载来源后可参考 [Apple 的打开未识别开发者应用说明](https://support.apple.com/guide/mac-help/mh40616/mac)。这些状态也会写入 Release 描述。后续引入 Developer ID 和公证时，需要相应调整构建、签名验证与发布文案。
 
+## 应用内检查更新
+
+应用内的“设置 → 关于 → 检查更新”使用公开的 `GET https://api.github.com/repos/gnl00/ciipapp/releases/latest`，读取最新正式版，不依赖本机 `gh` 登录。它按 SemVer 比较当前版本与 Release 标签，忽略构建元数据；当前版本更高时不会提示降级。草稿、预发布、非法标签、网络失败和请求受限不会被报告为“已是最新”。请求有 10 秒超时和响应大小限制。
+
+发现新版本后显示“前往 GitHub 下载”，仅在用户点击时通过默认浏览器打开本仓库的正式 Release 页面，由用户选择安装包并手动安装；检查操作不自动下载、安装或退出应用。原型返回明确标注的内存模拟结果。服务端请求、版本比较与设置页的异步状态分别有回归测试；真实联网检查可用 `CIIP_TEST_LIVE_UPDATES=1 CGO_ENABLED=1 go test ./internal/app -run '^TestLiveReleaseCheck$' -count=1 -v` 执行。
+
 ## 失败与重跑
 
 只有两种架构全部成功，`publish` job 才会运行。它先检查四个非空下载文件，生成 SHA256SUMS，然后通过 runner 自带的 GitHub CLI 创建草稿、上传完整文件，并将 GitHub 返回的 SHA-256 digest 与本地逐项比较。所有文件通过后才公开 Release；任一步失败都不公开半套下载。

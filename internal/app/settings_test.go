@@ -75,12 +75,6 @@ func TestMenuBarIconOptionsRoundTrip(t *testing.T) {
 		t.Fatalf("unknown icons must retain the defaults fallback: %#v, %v", got, err)
 	}
 }
-func TestUpdatePlaceholderNeverClaimsLatest(t *testing.T) {
-	result := (&CaptureService{}).CheckForUpdates()
-	if result.Status != "not_configured" || result.LatestVersion != "" || result.URL != "" {
-		t.Fatalf("misleading update result: %#v", result)
-	}
-}
 func TestTesseractTSVReturnsSelectablePixelLines(t *testing.T) {
 	data := "level\tpage_num\tblock_num\tpar_num\tline_num\tword_num\tleft\ttop\twidth\theight\tconf\ttext\n" +
 		"5\t1\t1\t1\t1\t1\t10\t20\t30\t12\t90\tHello\n" +
