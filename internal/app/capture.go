@@ -91,12 +91,12 @@ func (s *CaptureService) Capture(ctx context.Context, mode string) (*ImageData, 
 	if mode == "element" && !nativeElementPermission() {
 		return nil, errors.New("元素截图需要辅助功能权限，请在系统设置 → 隐私与安全性 → 辅助功能中允许 ciip 后重试")
 	}
-	dir, err := os.MkdirTemp("", "ciip-capture-")
-	if err != nil {
-		return nil, err
+	if s.preferenceSnapshot().CaptureMode == "quick" {
+		if err := s.prepareQuick(); err != nil {
+			return nil, err
+		}
+		defer s.discardPreparedQuick()
 	}
-	defer os.RemoveAll(dir)
-	path := filepath.Join(dir, "capture.png")
 	wasVisible := s.editor != nil && s.editor.IsVisible()
 	if s.editor != nil {
 		s.editor.Hide()
@@ -114,9 +114,10 @@ func (s *CaptureService) Capture(ctx context.Context, mode string) (*ImageData, 
 		return nil, ctx.Err()
 	case <-time.After(180 * time.Millisecond):
 	}
-	var selection *captureSelection
+	var data []byte
+	var captureRect *ScreenRect
 	if mode == "window" || mode == "element" {
-		selection, err = selectNativeCapture(ctx, mode)
+		selection, err := selectNativeCapture(ctx, mode)
 		if err != nil || selection == nil {
 			return nil, err
 		}
@@ -124,35 +125,28 @@ func (s *CaptureService) Capture(ctx context.Context, mode string) (*ImageData, 
 		if selectionErr != nil {
 			return nil, selectionErr
 		}
-		args = append(args, selectedArgs...)
-		// Let the selection panels leave the compositor before taking the image.
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		case <-time.After(180 * time.Millisecond):
+		var supported bool
+		data, supported, err = captureNativeSelection(ctx, selection, mode)
+		if err != nil {
+			return nil, fmt.Errorf("截图未完成：%w", err)
 		}
-	}
-	args = append(args, path)
-	var stderr bytes.Buffer
-	cmd := exec.CommandContext(ctx, "/usr/sbin/screencapture", args...)
-	cmd.Stderr = &stderr
-	runErr := cmd.Run()
-	if ctx.Err() != nil {
-		return nil, ctx.Err()
-	}
-	data, readErr := readImageFile(path)
-	if captureCanceled(runErr, readErr, stderr.String(), mode == "area") {
-		return nil, nil
-	}
-	if runErr != nil {
-		detail := strings.TrimSpace(stderr.String())
-		if detail == "" {
-			detail = runErr.Error()
+		if !supported {
+			// Older systems and cross-display regions retain the system
+			// capture. The bounded fallback covers close/compositor propagation;
+			// modern SCK requests the next frame after the native close barrier.
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(180 * time.Millisecond):
+			}
+			data, _, err = captureCommand(ctx, append(args, selectedArgs...), false)
 		}
-		return nil, fmt.Errorf("截图未完成：%s。请在系统设置 → 隐私与安全性 → 屏幕与系统音频录制中允许 ciip", detail)
+		captureRect = &selection.Rect
+	} else {
+		data, captureRect, err = captureCommand(ctx, args, mode == "area")
 	}
-	if readErr != nil {
-		return nil, fmt.Errorf("无法读取截图：%w", readErr)
+	if err != nil || data == nil {
+		return nil, err
 	}
 	img, raw, err := imageData(data, screenshotName())
 	if err != nil {
@@ -162,10 +156,6 @@ func (s *CaptureService) Capture(ctx context.Context, mode string) (*ImageData, 
 		return nil, fmt.Errorf("截图已完成，但复制到剪贴板失败：%w", err)
 	}
 	if s.preferenceSnapshot().CaptureMode == "quick" {
-		captureRect := nativeCaptureRect(path)
-		if selection != nil {
-			captureRect = &selection.Rect
-		}
 		placement, placementErr := placeQuickImage(img.Width, img.Height, captureRect, mygo.Screen.Displays(), mygo.Screen.CursorScreenPoint())
 		if placementErr != nil {
 			return nil, placementErr
@@ -179,6 +169,39 @@ func (s *CaptureService) Capture(ctx context.Context, mode string) (*ImageData, 
 	}
 	succeeded = true
 	return img, nil
+}
+
+// Interactive area/full-screen capture and older-system fallback keep the system
+// utility. Modern selected-window/element capture never creates a PNG file.
+func captureCommand(ctx context.Context, args []string, interactive bool) ([]byte, *ScreenRect, error) {
+	dir, err := os.MkdirTemp("", "ciip-capture-")
+	if err != nil {
+		return nil, nil, err
+	}
+	defer os.RemoveAll(dir)
+	path := filepath.Join(dir, "capture.png")
+	var stderr bytes.Buffer
+	cmd := exec.CommandContext(ctx, "/usr/sbin/screencapture", append(args, path)...)
+	cmd.Stderr = &stderr
+	runErr := cmd.Run()
+	if ctx.Err() != nil {
+		return nil, nil, ctx.Err()
+	}
+	data, readErr := readImageFile(path)
+	if captureCanceled(runErr, readErr, stderr.String(), interactive) {
+		return nil, nil, nil
+	}
+	if runErr != nil {
+		detail := strings.TrimSpace(stderr.String())
+		if detail == "" {
+			detail = runErr.Error()
+		}
+		return nil, nil, fmt.Errorf("截图未完成：%s。请在系统设置 → 隐私与安全性 → 屏幕与系统音频录制中允许 ciip", detail)
+	}
+	if readErr != nil {
+		return nil, nil, fmt.Errorf("无法读取截图：%w", readErr)
+	}
+	return data, nativeCaptureRect(path), nil
 }
 
 func captureArguments(mode string) ([]string, error) {

@@ -15,20 +15,31 @@ type captureSelection struct {
 	Rect     ScreenRect
 }
 
-// Native hover motion reads the same duration and curve as the application styles.
-func captureSelectionMotion(css string) (duration float64, curve [4]float64, err error) {
-	return nativePanelMotion(css, "--motion-capture-selection")
+// The selection token is the time for the native follower to cover 95% of a stationary target's distance.
+func captureSelectionMotion(css string) (float64, error) {
+	return nativeMotionDuration(css, "--motion-capture-selection")
+}
+
+func nativeMotionDuration(css, durationToken string) (float64, error) {
+	d := regexp.MustCompile(regexp.QuoteMeta(durationToken) + `:\s*([0-9.]+)ms`).FindStringSubmatch(css)
+	if len(d) != 2 {
+		return 0, errors.New("截图动效设计变量缺失")
+	}
+	duration, err := strconv.ParseFloat(d[1], 64)
+	if err != nil || duration < 0 || duration > 1000 {
+		return 0, errors.New("截图动效时长无效")
+	}
+	return duration / 1000, nil
 }
 
 func nativePanelMotion(css, durationToken string) (duration float64, curve [4]float64, err error) {
-	d := regexp.MustCompile(regexp.QuoteMeta(durationToken) + `:\s*([0-9.]+)ms`).FindStringSubmatch(css)
-	c := regexp.MustCompile(`--ease-panel:\s*cubic-bezier\(([^)]+)\)`).FindStringSubmatch(css)
-	if len(d) != 2 || len(c) != 2 {
-		return 0, curve, errors.New("截图动效设计变量缺失")
+	duration, err = nativeMotionDuration(css, durationToken)
+	if err != nil {
+		return 0, curve, err
 	}
-	duration, err = strconv.ParseFloat(d[1], 64)
-	if err != nil || duration < 0 || duration > 1000 {
-		return 0, curve, errors.New("截图动效时长无效")
+	c := regexp.MustCompile(`--ease-panel:\s*cubic-bezier\(([^)]+)\)`).FindStringSubmatch(css)
+	if len(c) != 2 {
+		return 0, curve, errors.New("截图动效设计变量缺失")
 	}
 	parts := strings.Split(c[1], ",")
 	if len(parts) != 4 {
@@ -40,7 +51,7 @@ func nativePanelMotion(css, durationToken string) (duration float64, curve [4]fl
 			return 0, curve, errors.New("截图动效曲线无效")
 		}
 	}
-	return duration / 1000, curve, nil
+	return duration, curve, nil
 }
 
 func (s *captureSelection) arguments(mode string) ([]string, error) {

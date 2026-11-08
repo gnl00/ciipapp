@@ -7,7 +7,7 @@ package app
 #cgo CFLAGS: -fblocks
 #include <stdint.h>
 int ciip_element_permission(void);
-int ciip_start_capture_selection(uintptr_t token, int element, double duration, double x1, double y1, double x2, double y2);
+int ciip_start_capture_selection(uintptr_t token, int element, double duration);
 void ciip_cancel_capture_selection(uintptr_t token);
 */
 import "C"
@@ -44,7 +44,7 @@ func nativeElementPermission() bool {
 }
 
 func selectNativeCapture(ctx context.Context, mode string) (*captureSelection, error) {
-	duration, curve, err := captureSelectionMotion(frontend.TokensCSS)
+	duration, err := captureSelectionMotion(frontend.TokensCSS)
 	if err != nil {
 		return nil, err
 	}
@@ -58,7 +58,7 @@ func selectNativeCapture(ctx context.Context, mode string) (*captureSelection, e
 		if mode == "element" {
 			element = 1
 		}
-		started = C.ciip_start_capture_selection(C.uintptr_t(token), element, C.double(duration), C.double(curve[0]), C.double(curve[1]), C.double(curve[2]), C.double(curve[3])) != 0
+		started = C.ciip_start_capture_selection(C.uintptr_t(token), element, C.double(duration)) != 0
 	})
 	if !started {
 		return nil, errors.New("无法打开截图选择器")

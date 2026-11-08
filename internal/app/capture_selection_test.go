@@ -34,17 +34,21 @@ func TestCaptureSelectionArguments(t *testing.T) {
 }
 
 func TestCaptureSelectionReadsSharedMotion(t *testing.T) {
-	duration, curve, err := captureSelectionMotion(frontend.TokensCSS)
-	if err != nil || duration != .12 || curve != ([4]float64{.16, 1, .3, 1}) {
-		t.Fatalf("shared motion: %v %v, %v", duration, curve, err)
+	duration, err := captureSelectionMotion(frontend.TokensCSS)
+	if err != nil || duration != .12 {
+		t.Fatalf("shared motion: %v, %v", duration, err)
 	}
 	changed := strings.Replace(frontend.TokensCSS, "--motion-capture-selection:120ms", "--motion-capture-selection:150ms", 1)
-	if duration, _, err := captureSelectionMotion(changed); err != nil || duration != .15 {
+	if duration, err := captureSelectionMotion(changed); err != nil || duration != .15 {
 		t.Fatalf("native selection ignored the changed token: %v %v", duration, err)
 	}
-	for _, css := range []string{"", "--motion-capture-selection:bad;--ease-panel:cubic-bezier(.16,1,.3,1)", "--motion-capture-selection:120ms;--ease-panel:cubic-bezier(2,1,.3,1)", "--motion-capture-selection:120ms;--ease-panel:cubic-bezier(.16,1,.3)"} {
-		if _, _, err := captureSelectionMotion(css); err == nil {
+	for _, css := range []string{"", "--motion-capture-selection:bad", "--motion-capture-selection:-1ms", "--motion-capture-selection:1001ms"} {
+		if _, err := captureSelectionMotion(css); err == nil {
 			t.Fatalf("accepted broken native motion contract: %q", css)
 		}
+	}
+	// The follower no longer consumes a Bezier curve. Only quick-window fades use --ease-panel.
+	if duration, err := captureSelectionMotion("--motion-capture-selection:120ms;--ease-panel:unused"); err != nil || duration != .12 {
+		t.Fatalf("selection incorrectly depends on panel easing: %v %v", duration, err)
 	}
 }

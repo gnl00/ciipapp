@@ -45,16 +45,9 @@ static NSString *captureSelectionDimensions(CGRect rect, CGFloat scale) {
     return [NSString stringWithFormat:@"%.0f × %.0f px", width, height];
 }
 
-static void updateCaptureLayer(CALayer *layer, NSString *key, id value, NSTimeInterval duration, CAMediaTimingFunction *curve) {
-    id from = [[(layer.presentationLayer ?: layer) valueForKey:key] retain];
-    [layer removeAnimationForKey:key];
-    [layer setValue:value forKey:key];
-    if (duration > 0 && from) {
-        CABasicAnimation *animation = [CABasicAnimation animationWithKeyPath:key];
-        animation.fromValue = from; animation.toValue = value; animation.duration = duration; animation.timingFunction = curve;
-        [layer addAnimation:animation forKey:key];
-    }
-    [from release];
+static BOOL closeCaptureRects(CGRect a, CGRect b, CGFloat tolerance) {
+    return usableCaptureRect(a) && usableCaptureRect(b) && fabs(a.origin.x - b.origin.x) <= tolerance &&
+        fabs(a.origin.y - b.origin.y) <= tolerance && fabs(a.size.width - b.size.width) <= tolerance && fabs(a.size.height - b.size.height) <= tolerance;
 }
 
 static BOOL captureElementRect(AXUIElementRef element, CGRect *rect) {
@@ -125,12 +118,16 @@ static AXUIElementRef smallestCaptureElement(AXUIElementRef hit, CGPoint point, 
 }
 
 // Query the underlying application directly so our mouse-catching overlay is never the AX target.
-static NSArray *captureElementsAtPoint(pid_t pid, CGPoint point, CGRect clip) {
+static NSArray *captureElementsAtPoint(pid_t pid, CGPoint point, CGRect clip, NSMutableDictionary *applications) {
     NSTimeInterval started = NSProcessInfo.processInfo.systemUptime;
-    AXUIElementRef application = AXUIElementCreateApplication(pid), element = NULL;
-    AXUIElementSetMessagingTimeout(application, .15);
+    AXUIElementRef application = (AXUIElementRef)applications[@(pid)], element = NULL;
+    BOOL created = !application;
+    if (created) {
+        application = AXUIElementCreateApplication(pid); AXUIElementSetMessagingTimeout(application, .15);
+        if (applications) applications[@(pid)] = (id)application;
+    }
     AXError hitError = AXUIElementCopyElementAtPosition(application, point.x, point.y, &element);
-    CFRelease(application);
+    if (created) CFRelease(application);
     if (hitError == kAXErrorCannotComplete) { if (element) CFRelease(element); return nil; }
     NSMutableArray *candidates = [NSMutableArray array];
     if (!element) return candidates;
@@ -183,7 +180,9 @@ static NSArray *captureElementsKeepingLeaf(NSArray *elements, NSArray *previous,
         !CGRectContainsPoint(oldRect, point) || !CGRectContainsRect(newRect, oldRect)) return elements;
     CGRect liveRect;
     AXUIElementSetMessagingTimeout(oldElement, .05);
-    if (!captureElementRect(oldElement, &liveRect) || !CGRectEqualToRect(CGRectIntersection(liveRect, clip), oldRect)) return elements;
+    if (!captureElementRect(oldElement, &liveRect)) return elements;
+    liveRect = CGRectIntersection(liveRect, clip);
+    if (!closeCaptureRects(liveRect, oldRect, .75) || !CGRectContainsPoint(liveRect, point)) return elements;
     AXUIElementRef current = (AXUIElementRef)CFRetain(oldElement);
     NSTimeInterval deadline = NSProcessInfo.processInfo.systemUptime + .15;
     BOOL attached = NO;
@@ -201,7 +200,9 @@ static NSArray *captureElementsKeepingLeaf(NSArray *elements, NSArray *previous,
     if (current) CFRelease(current);
     CFRelease(visited);
     if (!attached) return elements;
-    NSMutableArray *resolved = [NSMutableArray arrayWithObject:leaf];
+    NSMutableDictionary *liveLeaf = [[leaf mutableCopy] autorelease];
+    liveLeaf[@"rect"] = [NSValue valueWithRect:NSRectFromCGRect(liveRect)];
+    NSMutableArray *resolved = [NSMutableArray arrayWithObject:liveLeaf];
     [resolved addObjectsFromArray:elements];
     return resolved;
 }
@@ -211,13 +212,17 @@ static NSArray *captureElementsKeepingLeaf(NSArray *elements, NSArray *previous,
     CAShapeLayer *_shade, *_outline;
     CALayer *_dimensionPlate;
     CATextLayer *_dimensions;
-    CGRect _selectionRect, _surfaceBounds;
+    CGRect _selectionRect, _displayedSelection, _surfaceBounds;
+    id _selectionClock;
+    NSTrackingArea *_pointerTrackingArea;
+    CFTimeInterval _selectionTickTime;
     BOOL _configured;
 }
 @property(nonatomic, assign) CIIPCapturePicker *picker;
 @property(nonatomic) BOOL leftPressed, rightPressed, cancelOnRelease;
 - (void)updateSelectionAnimated:(BOOL)animated;
 - (BOOL)reduceSelectionMotion;
+- (void)stopSelectionAnimation;
 @end
 
 @interface CIIPCaptureSelectionPanel : NSPanel
@@ -229,11 +234,14 @@ static NSArray *captureElementsKeepingLeaf(NSArray *elements, NSArray *previous,
 @interface CIIPCapturePicker : NSObject
 @property(nonatomic) uintptr_t token;
 @property(nonatomic) BOOL elementMode, finished, pending, querying;
+@property(nonatomic) BOOL trackingSelection, draggingSelection;
+@property(nonatomic) CGPoint dragStart, dragPoint;
 @property(nonatomic) CGFloat desktopTop;
 @property(nonatomic) CGPoint point;
 @property(nonatomic) CGRect rect;
 @property(nonatomic, retain) NSDictionary *targetWindow;
 @property(nonatomic, retain) NSArray *elements;
+@property(nonatomic, retain) NSMutableDictionary *applications;
 @property(nonatomic) NSUInteger elementIndex;
 @property(nonatomic) NSUInteger unresolvedRetries;
 @property(nonatomic, retain) NSArray *ancestorProposal;
@@ -245,13 +253,15 @@ static NSArray *captureElementsKeepingLeaf(NSArray *elements, NSArray *previous,
 @property(nonatomic, retain) NSMutableArray *panels;
 @property(nonatomic, retain) NSTimer *timer;
 @property(nonatomic) NSTimeInterval selectionDuration;
-@property(nonatomic, retain) CAMediaTimingFunction *selectionCurve;
 - (void)sample;
 - (void)clearAncestorProposal;
 - (BOOL)acceptAncestorProposal;
 - (BOOL)deferAncestor:(NSArray *)elements window:(NSDictionary *)window point:(CGPoint)point requestedAt:(NSTimeInterval)requestedAt;
 - (void)redraw;
 - (void)redrawAnimated:(BOOL)animated;
+- (void)beginSelectionAtPoint:(CGPoint)point;
+- (void)updateSelectionAtPoint:(CGPoint)point;
+- (void)completeSelectionGesture;
 - (void)confirm;
 - (void)finish:(BOOL)accepted;
 - (void)keyDown:(NSEvent *)event;
@@ -275,24 +285,42 @@ static const NSTimeInterval captureAncestorDwell = .12;
         _dimensions = [CATextLayer layer]; _dimensions.frame = CGRectMake(0, 4, 144, 18); _dimensions.alignmentMode = kCAAlignmentCenter;
         [_dimensionPlate addSublayer:_dimensions];
         [self.layer addSublayer:_shade]; [self.layer addSublayer:_outline]; [self.layer addSublayer:_dimensionPlate];
-        _selectionRect = CGRectNull; _surfaceBounds = CGRectNull;
+        _selectionRect = _displayedSelection = CGRectNull; _surfaceBounds = CGRectNull;
     }
     return self;
 }
 - (BOOL)acceptsFirstResponder { return YES; }
 - (BOOL)acceptsFirstMouse:(NSEvent *)event { return YES; }
 - (void)resetCursorRects { [self addCursorRect:self.bounds cursor:self.picker.elementMode ? NSCursor.crosshairCursor : captureSelectionCursor(self.picker.appIcon)]; }
-- (void)mouseDown:(NSEvent *)event { self.leftPressed = YES; }
+- (void)updateTrackingAreas {
+    if (_pointerTrackingArea) { [self removeTrackingArea:_pointerTrackingArea]; [_pointerTrackingArea release]; }
+    _pointerTrackingArea = [[NSTrackingArea alloc] initWithRect:NSZeroRect options:NSTrackingMouseMoved | NSTrackingMouseEnteredAndExited | NSTrackingActiveAlways | NSTrackingInVisibleRect owner:self userInfo:nil];
+    [self addTrackingArea:_pointerTrackingArea]; [super updateTrackingAreas];
+}
+- (void)mouseMoved:(NSEvent *)event { [self.picker sample]; }
+- (void)mouseEntered:(NSEvent *)event { [self.picker sample]; }
+- (void)mouseExited:(NSEvent *)event { [self.picker sample]; }
+- (CGPoint)capturePointForEvent:(NSEvent *)event {
+    NSPoint point = event && self.window ? [self.window convertPointToScreen:event.locationInWindow] : NSEvent.mouseLocation;
+    return CGPointMake(point.x, self.picker.desktopTop - point.y);
+}
+- (void)mouseDown:(NSEvent *)event {
+    self.leftPressed = YES;
+    [self.picker beginSelectionAtPoint:[self capturePointForEvent:event]];
+}
 - (void)rightMouseDown:(NSEvent *)event { self.rightPressed = YES; self.cancelOnRelease = YES; }
-- (void)mouseDragged:(NSEvent *)event {}
+- (void)mouseDragged:(NSEvent *)event {
+    if (self.leftPressed && !self.cancelOnRelease) [self.picker updateSelectionAtPoint:[self capturePointForEvent:event]];
+}
 - (void)rightMouseDragged:(NSEvent *)event {}
 - (void)completeMouseGesture {
     if (self.leftPressed || self.rightPressed) return;
     BOOL cancel = self.cancelOnRelease; self.cancelOnRelease = NO;
-    if (cancel) [self.picker finish:NO]; else [self.picker confirm];
+    if (cancel) [self.picker finish:NO]; else [self.picker completeSelectionGesture];
 }
 - (void)mouseUp:(NSEvent *)event {
     if (!self.leftPressed) return;
+    if (!self.cancelOnRelease) [self.picker updateSelectionAtPoint:[self capturePointForEvent:event]];
     self.leftPressed = NO; [self completeMouseGesture];
 }
 - (void)rightMouseUp:(NSEvent *)event {
@@ -311,9 +339,67 @@ static const NSTimeInterval captureAncestorDwell = .12;
     [super layout];
     if (!CGRectEqualToRect(_surfaceBounds, NSRectToCGRect(self.bounds))) [self updateSelectionAnimated:NO];
 }
+- (void)stopSelectionAnimation {
+    [_selectionClock invalidate]; [_selectionClock release]; _selectionClock = nil;
+}
+- (void)viewWillMoveToWindow:(NSWindow *)newWindow {
+    if (!newWindow) [self stopSelectionAnimation];
+    [super viewWillMoveToWindow:newWindow];
+}
+- (void)dealloc { [self stopSelectionAnimation]; [_pointerTrackingArea release]; [super dealloc]; }
+- (void)drawSelectionRect:(CGRect)selected {
+    BOOL valid = usableCaptureRect(selected);
+    [CATransaction begin]; [CATransaction setDisableActions:YES];
+    CGMutablePathRef shade = CGPathCreateMutable(); CGPathAddRect(shade, NULL, NSRectToCGRect(self.bounds));
+    CGMutablePathRef border = CGPathCreateMutable();
+    if (valid) {
+        CGPathAddRect(shade, NULL, selected);
+        CGFloat inset = MIN(1, MIN(selected.size.width, selected.size.height) / 4);
+        CGPathAddRect(border, NULL, CGRectInset(selected, inset, inset));
+    }
+    _shade.path = shade; _outline.path = border;
+    CGPathRelease(shade); CGPathRelease(border);
+    _dimensionPlate.hidden = !self.picker.elementMode || !valid;
+    if (valid) {
+        CGFloat x = MAX(76, MIN(CGRectGetMidX(selected), self.bounds.size.width - 76));
+        CGFloat y = CGRectGetMinY(selected) - 18;
+        if (y < 18) y = MIN(self.bounds.size.height - 18, CGRectGetMaxY(selected) + 18);
+        _dimensionPlate.position = CGPointMake(x, y);
+    }
+    [CATransaction commit];
+}
+- (void)selectionTick:(id)sender {
+    if (!self.window || self.picker.finished) { [self stopSelectionAnimation]; return; }
+    CFTimeInterval now = CACurrentMediaTime();
+    NSTimeInterval elapsed = MIN(MAX(0, now - _selectionTickTime), 1.0 / 30);
+    _selectionTickTime = now;
+    CGFloat amount = self.picker.selectionDuration > 0 ? -expm1(-3 * elapsed / self.picker.selectionDuration) : 1;
+    if ([self reduceSelectionMotion]) amount = 1;
+    CGRect from = _displayedSelection, to = _selectionRect;
+    _displayedSelection = CGRectMake(from.origin.x + (to.origin.x - from.origin.x) * amount,
+        from.origin.y + (to.origin.y - from.origin.y) * amount,
+        from.size.width + (to.size.width - from.size.width) * amount,
+        from.size.height + (to.size.height - from.size.height) * amount);
+    if (closeCaptureRects(_displayedSelection, to, .25)) {
+        _displayedSelection = to; [self stopSelectionAnimation];
+    }
+    [self drawSelectionRect:_displayedSelection];
+}
+- (void)startSelectionAnimation {
+    if (_selectionClock) return;
+    _selectionTickTime = CACurrentMediaTime();
+    if (@available(macOS 14.0, *)) {
+        CADisplayLink *link = [self displayLinkWithTarget:self selector:@selector(selectionTick:)];
+        _selectionClock = [link retain];
+        [link addToRunLoop:NSRunLoop.mainRunLoop forMode:NSRunLoopCommonModes];
+    } else {
+        NSTimer *timer = [NSTimer timerWithTimeInterval:1.0 / 60 target:self selector:@selector(selectionTick:) userInfo:nil repeats:YES];
+        _selectionClock = [timer retain];
+        [NSRunLoop.mainRunLoop addTimer:timer forMode:NSRunLoopCommonModes];
+    }
+}
 - (void)updateSelectionAnimated:(BOOL)animated {
     CIIPCapturePicker *picker = self.picker;
-    // A new window can still be resolving. Keep the last visual selection without making it confirmable.
     if (picker.elementMode && picker.pending && !usableCaptureRect(picker.rect) && _configured) return;
     CGRect selected = CGRectNull;
     if (usableCaptureRect(picker.rect)) {
@@ -321,53 +407,73 @@ static const NSTimeInterval captureAncestorDwell = .12;
         selected = CGRectIntersection(NSRectToCGRect(self.bounds), CGRectMake(rect.origin.x - self.window.frame.origin.x,
             picker.desktopTop - CGRectGetMaxY(rect) - self.window.frame.origin.y, rect.size.width, rect.size.height));
     }
-    BOOL valid = usableCaptureRect(selected);
-    NSTimeInterval duration = animated && picker.elementMode && valid && usableCaptureRect(_selectionRect) && ![self reduceSelectionMotion] ? picker.selectionDuration : 0;
+    BOOL follow = animated && picker.elementMode && usableCaptureRect(selected) && usableCaptureRect(_displayedSelection) &&
+        picker.selectionDuration > 0 && ![self reduceSelectionMotion];
+    // AX providers can move a stationary frame by fractions of a point. Keep the visual target stable;
+    // the picker's semantic rectangle and its pixel dimensions continue to use the exact current bounds.
+    if (follow && closeCaptureRects(selected, _selectionRect, .75)) selected = _selectionRect;
     [CATransaction begin]; [CATransaction setDisableActions:YES];
     _surfaceBounds = NSRectToCGRect(self.bounds);
     _shade.frame = self.bounds; _outline.frame = self.bounds;
     _outline.strokeColor = NSColor.keyboardFocusIndicatorColor.CGColor;
     _outline.lineWidth = NSWorkspace.sharedWorkspace.accessibilityDisplayShouldIncreaseContrast ? 3 : 2;
-    _dimensionPlate.hidden = !picker.elementMode || !valid;
     _dimensionPlate.backgroundColor = NSColor.windowBackgroundColor.CGColor;
     _dimensions.contentsScale = self.window.backingScaleFactor ?: 1;
     _dimensions.string = [[[NSAttributedString alloc] initWithString:captureSelectionDimensions(picker.rect, self.window.backingScaleFactor ?: 1)
         attributes:@{NSFontAttributeName:[NSFont monospacedDigitSystemFontOfSize:12 weight:NSFontWeightMedium], NSForegroundColorAttributeName:NSColor.labelColor}] autorelease];
-    if (!_configured || !CGRectEqualToRect(selected, _selectionRect)) {
-        CGMutablePathRef shade = CGPathCreateMutable(); CGPathAddRect(shade, NULL, NSRectToCGRect(self.bounds));
-        CGMutablePathRef border = CGPathCreateMutable();
-        if (valid) {
-            CGPathAddRect(shade, NULL, selected);
-            CGFloat inset = MIN(1, MIN(selected.size.width, selected.size.height) / 4);
-            CGPathAddRect(border, NULL, CGRectInset(selected, inset, inset));
-        }
-        updateCaptureLayer(_shade, @"path", (id)shade, duration, picker.selectionCurve);
-        updateCaptureLayer(_outline, @"path", (id)border, duration, picker.selectionCurve);
-        CGPathRelease(shade); CGPathRelease(border);
-        if (valid) {
-            CGFloat x = MAX(76, MIN(CGRectGetMidX(selected), self.bounds.size.width - 76));
-            CGFloat y = CGRectGetMinY(selected) - 18;
-            if (y < 18) y = MIN(self.bounds.size.height - 18, CGRectGetMaxY(selected) + 18);
-            updateCaptureLayer(_dimensionPlate, @"position", [NSValue valueWithPoint:NSMakePoint(x, y)], duration, picker.selectionCurve);
-        }
-        _selectionRect = selected; _configured = YES;
-    } else if (!animated || [self reduceSelectionMotion]) {
-        [_shade removeAllAnimations]; [_outline removeAllAnimations]; [_dimensionPlate removeAllAnimations];
-    }
     [CATransaction commit];
+    _selectionRect = selected; _configured = YES;
+    if (!follow) {
+        [self stopSelectionAnimation]; _displayedSelection = selected;
+    } else if (!CGRectEqualToRect(_displayedSelection, selected)) {
+        [self startSelectionAnimation];
+    }
+    [self drawSelectionRect:_displayedSelection];
 }
 @end
 
 @implementation CIIPCapturePicker
 - (instancetype)init {
-    if ((self = [super init])) { _rect = CGRectNull; _point = CGPointMake(INFINITY, INFINITY); _panels = [[NSMutableArray alloc] init]; }
+    if ((self = [super init])) { _rect = CGRectNull; _point = CGPointMake(INFINITY, INFINITY); _panels = [[NSMutableArray alloc] init]; _applications = [[NSMutableDictionary alloc] init]; }
     return self;
 }
 - (void)dealloc {
-    [_targetWindow release]; [_elements release]; [_ancestorProposal release]; [_appIcon release]; [_appName release]; [_panels release]; [_timer release]; [_selectionCurve release];
+    [_targetWindow release]; [_elements release]; [_applications release]; [_ancestorProposal release]; [_appIcon release]; [_appName release]; [_panels release]; [_timer release];
     [super dealloc];
 }
 - (void)redraw { [self redrawAnimated:YES]; }
+- (void)beginSelectionAtPoint:(CGPoint)point {
+    if (!self.elementMode || self.finished) return;
+    self.trackingSelection = YES; self.draggingSelection = NO;
+    self.dragStart = point; self.dragPoint = point;
+}
+- (void)updateSelectionAtPoint:(CGPoint)point {
+    if (!self.trackingSelection || self.finished || !isfinite(point.x) || !isfinite(point.y)) return;
+    self.dragPoint = point;
+    if (!self.draggingSelection && hypot(point.x - self.dragStart.x, point.y - self.dragStart.y) < 4) return;
+    if (!self.draggingSelection) {
+        self.draggingSelection = YES; self.pending = NO; self.elements = nil; self.elementIndex = 0;
+        self.targetWindow = nil; [self clearAncestorProposal];
+    }
+    CGRect bounds = CGRectNull;
+    for (NSPanel *panel in self.panels) {
+        CGRect frame = CGRectMake(panel.frame.origin.x, self.desktopTop - NSMaxY(panel.frame), panel.frame.size.width, panel.frame.size.height);
+        if (usableCaptureRect(frame)) bounds = CGRectUnion(bounds, frame);
+    }
+    CGRect rect = CGRectMake(MIN(self.dragStart.x, point.x), MIN(self.dragStart.y, point.y),
+        fabs(point.x - self.dragStart.x), fabs(point.y - self.dragStart.y));
+    self.rect = CGRectIntersection(rect, bounds); self.point = point;
+    [self redrawAnimated:NO];
+}
+- (void)completeSelectionGesture {
+    self.trackingSelection = NO;
+    if (!self.elementMode) { [self confirm]; return; }
+    if (self.draggingSelection) { [self finish:usableCaptureRect(self.rect)]; return; }
+    // Sub-threshold hand movement is still a click on the highlighted element.
+    if (!self.pending && usableCaptureRect(self.rect) && CGRectContainsPoint(self.rect, self.dragPoint)) self.point = self.dragPoint;
+    else if (self.pending && !self.querying) self.point = CGPointMake(INFINITY, INFINITY);
+    [self confirm];
+}
 - (void)clearAncestorProposal {
     self.ancestorProposal = nil; self.ancestorProposalSince = 0;
     self.ancestorProposalPoint = CGPointMake(INFINITY, INFINITY); self.ancestorProposalGeneration++;
@@ -382,11 +488,11 @@ static const NSTimeInterval captureAncestorDwell = .12;
 - (BOOL)deferAncestor:(NSArray *)elements window:(NSDictionary *)window point:(CGPoint)point requestedAt:(NSTimeInterval)requestedAt {
     CGRect oldRect = self.elements.count ? NSRectToCGRect([self.elements[0][@"rect"] rectValue]) : CGRectNull;
     CGRect rect = elements.count ? NSRectToCGRect([elements[0][@"rect"] rectValue]) : CGRectNull;
-    if (!usableCaptureRect(oldRect) || !usableCaptureRect(rect) || CGRectEqualToRect(rect, oldRect) ||
-        !CGRectContainsRect(rect, oldRect) || !CGRectContainsRect(rect, self.rect) || CGRectEqualToRect(rect, self.rect)) {
+    if (!usableCaptureRect(oldRect) || !usableCaptureRect(rect) || closeCaptureRects(rect, oldRect, .75) ||
+        !CGRectContainsRect(rect, oldRect) || !CGRectContainsRect(rect, self.rect) || closeCaptureRects(rect, self.rect, .75)) {
         [self clearAncestorProposal]; return NO;
     }
-    BOOL sameProposal = self.ancestorProposal.count && [self.ancestorProposal[0][@"rect"] isEqual:elements[0][@"rect"]];
+    BOOL sameProposal = self.ancestorProposal.count && closeCaptureRects(NSRectToCGRect([self.ancestorProposal[0][@"rect"] rectValue]), rect, .75);
     NSPoint mouse = NSEvent.mouseLocation;
     CGPoint livePoint = CGPointMake(mouse.x, self.desktopTop - mouse.y);
     if (!CGPointEqualToPoint(point, self.point) || !CGPointEqualToPoint(point, livePoint)) {
@@ -402,7 +508,7 @@ static const NSTimeInterval captureAncestorDwell = .12;
         NSUInteger generation = ++self.ancestorProposalGeneration;
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(captureAncestorDwell * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
             if (!self.finished && self.ancestorProposal.count && generation == self.ancestorProposalGeneration && sameCaptureWindow(window, self.targetWindow)) {
-                // Read the physical pointer again, including movement between the regular 50ms samples.
+                // Read the physical pointer again, including movement between tracking events.
                 self.point = CGPointMake(INFINITY, INFINITY); [self sample];
             }
         });
@@ -422,7 +528,7 @@ static const NSTimeInterval captureAncestorDwell = .12;
     }
 }
 - (void)sample {
-    if (self.finished) return;
+    if (self.finished || self.trackingSelection) return;
     NSPoint mouse = NSEvent.mouseLocation;
     CGPoint point = CGPointMake(mouse.x, self.desktopTop - mouse.y);
     if (CGPointEqualToPoint(point, self.point)) return;
@@ -451,10 +557,13 @@ static const NSTimeInterval captureAncestorDwell = .12;
         self.pending = NO; [self redraw]; return;
     }
     if (!self.elementMode) { self.rect = windowRect; self.pending = NO; [self redraw]; return; }
-    self.pending = YES; [self redraw];
+    self.pending = YES;
     if (self.querying) return;
+    [self redraw];
     self.querying = YES;
     NSArray *previous = sameWindow ? self.elements : nil;
+    // Only one background query runs at a time; the session cache stays on that worker path.
+    NSMutableDictionary *applications = self.applications;
     CGRect clip = windowRect;
     for (NSScreen *screen in NSScreen.screens) if (NSPointInRect(mouse, screen.frame)) {
         clip = CGRectIntersection(clip, CGRectMake(screen.frame.origin.x, self.desktopTop - NSMaxY(screen.frame), screen.frame.size.width, screen.frame.size.height));
@@ -464,10 +573,10 @@ static const NSTimeInterval captureAncestorDwell = .12;
     NSTimeInterval requestedAt = NSProcessInfo.processInfo.systemUptime;
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
         @autoreleasepool {
-            NSArray *elements = captureElementsKeepingLeaf(captureElementsAtPoint(pid, point, clip), previous, point, clip);
+            NSArray *elements = captureElementsKeepingLeaf(captureElementsAtPoint(pid, point, clip, applications), previous, point, clip);
             dispatch_async(dispatch_get_main_queue(), ^{
                 self.querying = NO;
-                if (self.finished) return;
+                if (self.finished || self.draggingSelection) return;
                 BOOL sameLeaf = elements.count && CGRectContainsPoint(NSRectToCGRect([elements[0][@"rect"] rectValue]), self.point);
                 if ((!CGPointEqualToPoint(point, self.point) && !sameLeaf) || !sameCaptureWindow(window, self.targetWindow)) {
                     self.point = CGPointMake(INFINITY, INFINITY); [self sample]; return;
@@ -490,9 +599,10 @@ static const NSTimeInterval captureAncestorDwell = .12;
                 self.unresolvedRetries = 0;
                 if ([self deferAncestor:elements window:window point:point requestedAt:requestedAt]) return;
                 NSUInteger index = 0;
-                if (self.elements.count && elements.count && [self.elements[0][@"rect"] isEqual:elements[0][@"rect"]]) {
+                if (self.elements.count && elements.count && closeCaptureRects(NSRectToCGRect([self.elements[0][@"rect"] rectValue]), NSRectToCGRect([elements[0][@"rect"] rectValue]), .75) &&
+                    CFEqual((CFTypeRef)self.elements[0][@"element"], (CFTypeRef)elements[0][@"element"])) {
                     for (NSUInteger i = 0; i < elements.count; i++) {
-                        if (CGRectEqualToRect(NSRectToCGRect([elements[i][@"rect"] rectValue]), self.rect)) { index = i; break; }
+                        if (closeCaptureRects(NSRectToCGRect([elements[i][@"rect"] rectValue]), self.rect, .75)) { index = i; break; }
                     }
                 }
                 self.pending = NO; self.elements = elements; self.elementIndex = index;
@@ -539,7 +649,10 @@ static const NSTimeInterval captureAncestorDwell = .12;
     self.finished = YES; [self.timer invalidate]; self.timer = nil;
     [self clearAncestorProposal];
     [[NSNotificationCenter defaultCenter] removeObserver:self];
-    for (NSPanel *panel in self.panels) [panel close];
+    for (NSPanel *panel in self.panels) {
+        [(CIIPCaptureSelectionView *)panel.contentView stopSelectionAnimation];
+        [panel close];
+    }
     [self.panels removeAllObjects];
     CGRect rect = accepted ? self.rect : CGRectZero;
     ciip_go_capture_selection(self.token, accepted ? [self.targetWindow[(id)kCGWindowNumber] unsignedIntValue] : 0,
@@ -553,30 +666,31 @@ int ciip_element_permission(void) {
     return AXIsProcessTrustedWithOptions((CFDictionaryRef)@{(id)kAXTrustedCheckOptionPrompt:@YES});
 }
 
-int ciip_start_capture_selection(uintptr_t token, int element, double duration, double x1, double y1, double x2, double y2) {
+int ciip_start_capture_selection(uintptr_t token, int element, double duration) {
     if (activeCapturePicker || !NSScreen.screens.count) return 0;
     CIIPCapturePicker *picker = [[CIIPCapturePicker alloc] init];
     activeCapturePicker = picker; picker.token = token; picker.elementMode = element != 0;
     picker.selectionDuration = duration;
-    picker.selectionCurve = [CAMediaTimingFunction functionWithControlPoints:x1 :y1 :x2 :y2];
     picker.desktopTop = NSMaxY([NSScreen.screens[0] frame]);
     for (NSScreen *screen in NSScreen.screens) {
         NSPanel *panel = [[[CIIPCaptureSelectionPanel alloc] initWithContentRect:screen.frame styleMask:NSWindowStyleMaskBorderless | NSWindowStyleMaskNonactivatingPanel backing:NSBackingStoreBuffered defer:NO] autorelease];
         panel.releasedWhenClosed = NO; panel.opaque = NO; panel.backgroundColor = NSColor.clearColor;
         panel.hasShadow = NO; panel.hidesOnDeactivate = NO; panel.level = NSScreenSaverWindowLevel;
+        panel.acceptsMouseMovedEvents = YES;
         panel.title = picker.elementMode ? @"元素截图" : @"窗口截图";
         panel.collectionBehavior = NSWindowCollectionBehaviorCanJoinAllSpaces | NSWindowCollectionBehaviorFullScreenAuxiliary;
         CIIPCaptureSelectionView *view = [[[CIIPCaptureSelectionView alloc] initWithFrame:NSMakeRect(0, 0, screen.frame.size.width, screen.frame.size.height)] autorelease];
         view.picker = picker; panel.contentView = view;
         [view setAccessibilityElement:YES]; [view setAccessibilityRole:NSAccessibilityGroupRole];
-        [view setAccessibilityHelp:picker.elementMode ? @"点击或回车截图，方向键上下选择元素层级，Esc 取消" : @"点击或回车截图，Esc 取消"];
+        [view setAccessibilityHelp:picker.elementMode ? @"点击或回车截图，拖动框选区域，方向键上下选择元素层级，Esc 取消" : @"点击或回车截图，Esc 取消"];
         [panel makeFirstResponder:view]; [picker.panels addObject:panel];
         [panel orderFrontRegardless];
         if (NSPointInRect(NSEvent.mouseLocation, screen.frame)) [panel makeKeyWindow];
     }
     [[NSNotificationCenter defaultCenter] addObserver:picker selector:@selector(screenChanged:) name:NSApplicationDidChangeScreenParametersNotification object:nil];
     [picker sample];
-    picker.timer = [NSTimer scheduledTimerWithTimeInterval:.05 target:picker selector:@selector(sample) userInfo:nil repeats:YES];
+    // Pointer events drive selection; the low-frequency timer only covers missed tracking events.
+    picker.timer = [NSTimer scheduledTimerWithTimeInterval:.2 target:picker selector:@selector(sample) userInfo:nil repeats:YES];
     return 1;
 }
 

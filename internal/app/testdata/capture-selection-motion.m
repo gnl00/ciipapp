@@ -34,7 +34,7 @@ static void renderFrame(CALayer *layer, NSString *directory, NSString *name, CGF
 int main(int argc, const char **argv) {
     @autoreleasepool {
         [NSApplication sharedApplication]; assert(NSScreen.screens.count > 0);
-        NSString *directory = argc > 6 ? [NSString stringWithUTF8String:argv[6]] : nil;
+        NSString *directory = argc > 2 ? [NSString stringWithUTF8String:argv[2]] : nil;
         NSRect work = NSScreen.screens[0].visibleFrame;
         NSPanel *panel = [[CIIPCaptureSelectionPanel alloc] initWithContentRect:NSMakeRect(work.origin.x + 40, work.origin.y + 60, 680, 420) styleMask:NSWindowStyleMaskBorderless | NSWindowStyleMaskNonactivatingPanel backing:NSBackingStoreBuffered defer:NO];
         panel.releasedWhenClosed = NO; panel.hidesOnDeactivate = NO; panel.level = NSScreenSaverWindowLevel;
@@ -50,7 +50,6 @@ int main(int argc, const char **argv) {
         CIIPCapturePicker *picker = [[CIIPCapturePicker alloc] init]; picker.elementMode = YES;
         picker.desktopTop = NSMaxY(NSScreen.screens[0].frame);
         picker.selectionDuration = argc > 1 ? atof(argv[1]) : .12;
-        picker.selectionCurve = [CAMediaTimingFunction functionWithControlPoints:argc > 2 ? atof(argv[2]) : .16 :argc > 3 ? atof(argv[3]) : 1 :argc > 4 ? atof(argv[4]) : .3 :argc > 5 ? atof(argv[5]) : 1];
         CIIPCaptureMotionView *view = [[[CIIPCaptureMotionView alloc] initWithFrame:background.bounds] autorelease];
         view.picker = picker; [background addSubview:view];
         CGRect a = CGRectMake(60, 220, 140, 80), b = CGRectMake(360, 100, 180, 100), c = CGRectMake(240, 240, 120, 60);
@@ -61,11 +60,19 @@ int main(int argc, const char **argv) {
         assert(!plate.hidden && ![outline animationForKey:@"path"]);
         renderFrame(background.layer, directory, @"selection-start.png", panel.backingScaleFactor);
 
+        CGRect jitter = CGRectMake(a.origin.x + .25, a.origin.y + .25, a.size.width + .25, a.size.height + .25);
+        picker.rect = globalRect(jitter, panel, picker.desktopTop); [view updateSelectionAnimated:YES];
+        CGRect jitterBorder = CGPathGetBoundingBox(outline.path);
+        if (!CGRectEqualToRect(jitterBorder, CGRectInset(a, 1, 1))) fprintf(stderr, "AX geometry jitter moved visible target: %s\n", NSStringFromRect(NSRectFromCGRect(jitterBorder)).UTF8String);
+        assert(CGRectEqualToRect(jitterBorder, CGRectInset(a, 1, 1)));
+        assert(CGRectEqualToRect(picker.rect, globalRect(jitter, panel, picker.desktopTop))); // Capture geometry stays exact.
+        picker.rect = globalRect(a, panel, picker.desktopTop); [view updateSelectionAnimated:NO];
+
         picker.rect = globalRect(b, panel, picker.desktopTop); [view updateSelectionAnimated:YES];
-        CABasicAnimation *motion = (CABasicAnimation *)[outline animationForKey:@"path"];
-        assert(motion && fabs(motion.duration - picker.selectionDuration) < .0001);
-        [view layout]; assert([outline animationForKey:@"path"]); // Unchanged AppKit layout must not interrupt hover motion.
-        assert(CGRectEqualToRect(CGPathGetBoundingBox(outline.path), CGRectInset(b, 1, 1)));
+        id clock = [view valueForKey:@"selectionClock"];
+        assert(clock && ![outline animationForKey:@"path"]);
+        [view layout]; assert([view valueForKey:@"selectionClock"] == clock); // Unchanged layout must not interrupt following.
+        assert(CGRectEqualToRect(CGPathGetBoundingBox(outline.path), CGRectInset(a, 1, 1)));
         drainFor(.025);
         CGRect first = CGPathGetBoundingBox([(CAShapeLayer *)outline.presentationLayer path]);
         if (!(first.origin.x > a.origin.x + 1 && first.origin.x < b.origin.x + 1)) fprintf(stderr, "selection motion: first x=%.2f, from=%.2f, to=%.2f\n", first.origin.x, a.origin.x + 1, b.origin.x + 1);
@@ -76,28 +83,32 @@ int main(int argc, const char **argv) {
         assert(second.origin.x >= first.origin.x && second.origin.x < b.origin.x + 1);
         renderFrame(background.layer, directory, @"selection-moving-2.png", panel.backingScaleFactor);
 
+        CGRect retarget = CGPathGetBoundingBox(outline.path);
         picker.rect = globalRect(c, panel, picker.desktopTop); [view updateSelectionAnimated:YES];
-        motion = (CABasicAnimation *)[outline animationForKey:@"path"];
-        CGRect retarget = CGPathGetBoundingBox((CGPathRef)motion.fromValue);
-        assert(fabs(retarget.origin.x - second.origin.x) < 1);
-        [view updateSelectionAnimated:YES]; // Repeated hits of the same element must not restart the transition.
-        assert(CGRectEqualToRect(retarget, CGPathGetBoundingBox((CGPathRef)[(CABasicAnimation *)[outline animationForKey:@"path"] fromValue])));
-        drainFor(picker.selectionDuration + .04);
+        assert(CGRectEqualToRect(CGPathGetBoundingBox(outline.path), retarget)); // Retarget from the current displayed frame.
+        [view updateSelectionAnimated:YES];
+        assert([view valueForKey:@"selectionClock"] == clock && CGRectEqualToRect(CGPathGetBoundingBox(outline.path), retarget));
+        drainFor(picker.selectionDuration * 3 + .04);
         assert(CGRectEqualToRect(CGPathGetBoundingBox([(CAShapeLayer *)outline.presentationLayer path]), CGRectInset(c, 1, 1)));
+        assert(![view valueForKey:@"selectionClock"]); // Settled selections do not keep a display callback alive.
         renderFrame(background.layer, directory, @"selection-settled.png", panel.backingScaleFactor);
 
         picker.pending = YES; picker.rect = CGRectNull; [view updateSelectionAnimated:YES];
         assert(CGRectEqualToRect(CGPathGetBoundingBox(outline.path), CGRectInset(c, 1, 1)));
         picker.pending = NO; picker.rect = globalRect(a, panel, picker.desktopTop); [view updateSelectionAnimated:NO];
-        assert(![outline animationForKey:@"path"]); // Keyboard changes are immediate.
+        assert(![view valueForKey:@"selectionClock"] && CGRectEqualToRect(CGPathGetBoundingBox(outline.path), CGRectInset(a, 1, 1))); // Keyboard changes are immediate.
         view.forceReducedMotion = YES;
         picker.rect = globalRect(b, panel, picker.desktopTop); [view updateSelectionAnimated:YES];
-        assert(![outline animationForKey:@"path"] && CGRectEqualToRect(CGPathGetBoundingBox(outline.path), CGRectInset(b, 1, 1)));
+        assert(![view valueForKey:@"selectionClock"] && CGRectEqualToRect(CGPathGetBoundingBox(outline.path), CGRectInset(b, 1, 1)));
         picker.rect = CGRectNull; [view updateSelectionAnimated:NO]; assert(plate.hidden && CGPathIsEmpty(outline.path));
         assert(view.layer.sublayers[0] == shade && view.layer.sublayers[1] == outline); // One persistent overlay.
         picker.elementMode = NO; picker.rect = globalRect(a, panel, picker.desktopTop); [view updateSelectionAnimated:YES];
-        assert(plate.hidden && ![outline animationForKey:@"path"]);
+        assert(plate.hidden && ![view valueForKey:@"selectionClock"]);
+        view.forceReducedMotion = NO; picker.elementMode = YES;
+        picker.rect = globalRect(b, panel, picker.desktopTop); [view updateSelectionAnimated:YES];
+        assert([view valueForKey:@"selectionClock"]);
+        [view removeFromSuperview]; assert(![view valueForKey:@"selectionClock"]);
         [panel close]; [panel release]; [picker release];
-        puts("PASS native selection motion: presentation frames, retargeting, stable overlay, pixel dimensions, keyboard, reduced motion, window mode");
+        puts("PASS native selection motion: geometry tolerance, continuous presentation, retargeting, stable layers, dimensions, keyboard, reduced motion, clock cleanup");
     }
 }

@@ -16,6 +16,7 @@ import (
 type quickState struct {
 	quickMu       sync.Mutex
 	quick         *quickSession
+	preparedQuick *quickSession
 	quickSequence atomic.Uint64
 }
 type quickSession struct {
@@ -25,6 +26,7 @@ type quickSession struct {
 	token          string
 	transferToken  string
 	ready          bool
+	captureReady   chan struct{}
 	motionDuration float64
 	motionCurve    [4]float64
 }
@@ -44,9 +46,10 @@ func (s *CaptureService) focusQuickEditor() bool {
 	current := s.quick
 	transferring := current != nil && current.transferToken != ""
 	ready := current != nil && current.ready
+	preparing := s.preparedQuick != nil
 	s.quickMu.Unlock()
 	if current == nil || transferring {
-		return false
+		return preparing
 	}
 	// Reopen/activation may arrive while the new WebView is still loading.
 	// Let QuickReady reveal it after the image has painted.
@@ -57,43 +60,95 @@ func (s *CaptureService) focusQuickEditor() bool {
 	current.window.Focus()
 	return true
 }
-func (s *CaptureService) presentQuick(image *ImageData, placement QuickPlacement) error {
-	duration, curve, err := nativePanelMotion(frontend.TokensCSS, "--motion-panel-in")
-	if err != nil {
-		return err
-	}
+
+// Start loading the hidden editor while the user chooses a capture. No document
+// or editor commands belong to this window until presentQuick supplies the image.
+func (s *CaptureService) prepareQuick() error {
 	s.quickMu.Lock()
 	if s.quick != nil {
 		s.quickMu.Unlock()
 		return errors.New("请先完成当前快捷编辑，或按 Esc 关闭后重新截图")
 	}
-	token := fmt.Sprint(s.quickSequence.Add(1))
+	if s.preparedQuick != nil {
+		s.quickMu.Unlock()
+		return nil
+	}
 	s.quickMu.Unlock()
+	duration, curve, err := nativePanelMotion(frontend.TokensCSS, "--motion-panel-in")
+	if err != nil {
+		return err
+	}
+	token := fmt.Sprint(s.quickSequence.Add(1))
 	win := mygo.NewWindow(mygo.WindowOptions{
-		Title: "ciip 快捷编辑", URL: "/?mode=quick", X: placement.Panel.X, Y: placement.Panel.Y,
-		Width: placement.Panel.Width, Height: placement.Panel.Height,
-		MinWidth: min(quickMinWidth, placement.Panel.Width), MinHeight: min(quickMinHeight, placement.Panel.Height),
-		Frameless: true, Panel: true, AlwaysOnTop: true, Hidden: true, Transparent: true,
+		Title: "ciip 快捷编辑", URL: "about:blank", Width: quickMinWidth, Height: quickMinHeight,
+		MinWidth: 1, MinHeight: 1, Frameless: true, Panel: true, AlwaysOnTop: true, Hidden: true, Transparent: true,
 		DisableShadow: true, DisableMaximize: true, DisableFullScreen: true, SkipTaskbar: true,
 	})
-	win.SetBounds(placement.Panel)
 	maintainQuickMaterial(win)
+	current := &quickSession{window: win, token: token, captureReady: make(chan struct{}), motionDuration: duration, motionCurve: curve}
 	s.quickMu.Lock()
-	s.quick = &quickSession{window: win, image: image, placement: placement, token: token, motionDuration: duration, motionCurve: curve}
+	if s.quick != nil || s.preparedQuick != nil {
+		s.quickMu.Unlock()
+		win.Destroy()
+		return errors.New("截图编辑器已改变")
+	}
+	s.preparedQuick = current
 	s.quickMu.Unlock()
 	win.OnClosed(func() {
+		s.detachPreparedQuick(token)
 		if current := s.detachQuickSession(token); current != nil {
-			go func() {
-				s.EndShortcutRecording()
-				s.abortQuickTransfer(current.transferToken)
-			}()
+			go func() { s.EndShortcutRecording(); s.abortQuickTransfer(current.transferToken) }()
 		}
 	})
 	win.Page().OnWillNavigate(func(e *mygo.NavigateEvent) {
-		if e.URL != "mygo://localhost/?mode=quick" && e.URL != "mygo://localhost/index.html?mode=quick" {
+		if e.URL != "about:blank" && e.URL != "mygo://localhost/?mode=quick" && e.URL != "mygo://localhost/index.html?mode=quick" {
 			e.PreventDefault()
 		}
 	})
+	// Register the session before page JavaScript can request its capture.
+	if err := win.Page().LoadURL("/?mode=quick"); err != nil {
+		s.detachPreparedQuick(token)
+		win.Destroy()
+		return err
+	}
+	return nil
+}
+
+func (s *quickState) detachPreparedQuick(token string) *quickSession {
+	s.quickMu.Lock()
+	defer s.quickMu.Unlock()
+	current := s.preparedQuick
+	if current == nil || (token != "" && current.token != token) {
+		return nil
+	}
+	s.preparedQuick = nil
+	if current.captureReady != nil {
+		close(current.captureReady)
+		current.captureReady = nil
+	}
+	return current
+}
+func (s *CaptureService) discardPreparedQuick() {
+	if current := s.detachPreparedQuick(""); current != nil {
+		current.window.Destroy()
+	}
+}
+func (s *CaptureService) presentQuick(image *ImageData, placement QuickPlacement) error {
+	if err := s.prepareQuick(); err != nil {
+		return err
+	}
+	s.quickMu.Lock()
+	current := s.preparedQuick
+	s.quickMu.Unlock()
+	if current == nil {
+		return errors.New("快捷编辑已关闭")
+	}
+	current.window.SetMinimumSize(min(quickMinWidth, placement.Panel.Width), min(quickMinHeight, placement.Panel.Height))
+	current.window.SetBounds(placement.Panel)
+	if !s.publishQuickCapture(current, image, placement) {
+		return errors.New("快捷编辑已关闭")
+	}
+	token := current.token
 	time.AfterFunc(12*time.Second, func() {
 		s.quickMu.Lock()
 		current := s.quick
@@ -111,6 +166,25 @@ func (s *CaptureService) presentQuick(image *ImageData, placement QuickPlacement
 	})
 	return nil
 }
+
+// Publish only after native bounds have been applied; cancellation may have
+// detached this prepared window while the main-thread operation was queued.
+func (s *quickState) publishQuickCapture(current *quickSession, image *ImageData, placement QuickPlacement) bool {
+	s.quickMu.Lock()
+	defer s.quickMu.Unlock()
+	if current == nil || s.preparedQuick != current || s.quick != nil {
+		return false
+	}
+	current.image = image
+	current.placement = placement
+	s.preparedQuick = nil
+	s.quick = current
+	if current.captureReady != nil {
+		close(current.captureReady)
+		current.captureReady = nil
+	}
+	return true
+}
 func (s *CaptureService) callerQuick(ctx context.Context) (*quickSession, error) {
 	s.quickMu.Lock()
 	defer s.quickMu.Unlock()
@@ -120,11 +194,43 @@ func (s *CaptureService) callerQuick(ctx context.Context) (*quickSession, error)
 	return s.quick, nil
 }
 func (s *CaptureService) GetQuickCapture(ctx context.Context) (QuickCapture, error) {
-	current, err := s.callerQuick(ctx)
-	if err != nil {
+	capture, err := s.quickCapture(ctx, mygo.CallerWindow(ctx))
+	if err == nil {
+		capture.DoubleClickMS = nativeDoubleClickMilliseconds()
+	}
+	return capture, err
+}
+func (s *CaptureService) quickCapture(ctx context.Context, caller *mygo.Window) (QuickCapture, error) {
+	if err := ctx.Err(); err != nil {
 		return QuickCapture{}, err
 	}
-	return QuickCapture{Image: current.image, Placement: current.placement, DoubleClickMS: nativeDoubleClickMilliseconds()}, nil
+	s.quickMu.Lock()
+	current := s.quick
+	if current == nil || current.window != caller {
+		current = s.preparedQuick
+	}
+	if caller == nil || current == nil || current.window != caller {
+		s.quickMu.Unlock()
+		return QuickCapture{}, errors.New("快捷编辑已关闭")
+	}
+	wait := current.captureReady
+	s.quickMu.Unlock()
+	if wait != nil {
+		select {
+		case <-wait:
+		case <-ctx.Done():
+			return QuickCapture{}, ctx.Err()
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return QuickCapture{}, err
+	}
+	s.quickMu.Lock()
+	defer s.quickMu.Unlock()
+	if s.quick != current || current.image == nil {
+		return QuickCapture{}, errors.New("快捷编辑已关闭")
+	}
+	return QuickCapture{Image: current.image, Placement: current.placement}, nil
 }
 
 func (s *CaptureService) GetQuickBounds(ctx context.Context) (ScreenRect, error) {

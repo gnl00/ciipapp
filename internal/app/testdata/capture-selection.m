@@ -19,6 +19,10 @@ static NSUInteger beepCount;
 static void fixtureBeep(void) { beepCount++; }
 static dispatch_semaphore_t hitGate, hitEntered;
 static atomic_uint hitCount;
+static atomic_uint applicationCreations;
+static AXUIElementRef fixtureApplication(pid_t pid) {
+    atomic_fetch_add(&applicationCreations, 1); return AXUIElementCreateApplication(pid);
+}
 static CGPoint leafOrigin = {-160, 120};
 static CGRect containerRect = {{-200, 100}, {200, 140}};
 static CGSize leafSize = {40, 24};
@@ -65,9 +69,11 @@ static CFArrayRef fixtureWindowList(CGWindowListOption option, CGWindowID window
 }
 #define AXUIElementCopyElementAtPosition fixtureHit
 #define AXUIElementCopyAttributeValue fixtureAttribute
+#define AXUIElementCreateApplication fixtureApplication
 #define CGWindowListCopyWindowInfo fixtureWindowList
 #define NSBeep fixtureBeep
 #include "../capture_selection_darwin.m"
+#undef AXUIElementCreateApplication
 
 void ciip_go_capture_selection(uintptr_t token, uint32_t window, double x, double y, double w, double h) {
     callbackCount++; callbackWindow = window; callbackRect = CGRectMake(x, y, w, h);
@@ -115,6 +121,16 @@ static void drainUntil(BOOL (^ready)(void)) {
     }
     assert(ready());
 }
+static void waitForHit(unsigned int expectedCount) {
+    // A counter increment precedes the signal. Consume exactly one entry notification for
+    // each gated request, including requests started by a main-queue completion callback.
+    __block BOOL entered = NO;
+    drainUntil(^BOOL {
+        if (!entered) entered = dispatch_semaphore_wait(hitEntered, DISPATCH_TIME_NOW) == 0;
+        return entered;
+    });
+    assert(atomic_load(&hitCount) == expectedCount);
+}
 static void drainFor(NSTimeInterval duration) {
     NSDate *until = [NSDate dateWithTimeIntervalSinceNow:duration];
     while (until.timeIntervalSinceNow > 0) [[NSRunLoop currentRunLoop] runMode:NSDefaultRunLoopMode beforeDate:until];
@@ -141,7 +157,7 @@ static void testCaptureAncestorVisual(NSString *directory) {
     fixtureWindows = @[windowInfo(1002, 12, containerRect, 1)]; fixtureMouse = NSMakePoint(-350, 885);
     hitGroup = hitContainer = rootChildrenAvailable = NO;
     CIIPCapturePicker *picker = [[CIIPCapturePicker alloc] init]; picker.elementMode = YES; picker.desktopTop = 1000;
-    picker.selectionDuration = .12; picker.selectionCurve = [CAMediaTimingFunction functionWithControlPoints:.16 :1 :.3 :1];
+    picker.selectionDuration = .12;
     NSPanel *panel = [[CIIPCaptureSelectionPanel alloc] initWithContentRect:NSMakeRect(-550, 630, 800, 480) styleMask:NSWindowStyleMaskBorderless | NSWindowStyleMaskNonactivatingPanel backing:NSBackingStoreBuffered defer:NO];
     panel.releasedWhenClosed = NO;
     CIIPCaptureDwellView *view = [[[CIIPCaptureDwellView alloc] initWithFrame:NSMakeRect(0, 0, 800, 480)] autorelease]; view.picker = picker; panel.contentView = view;
@@ -217,6 +233,7 @@ static void testCaptureAncestorDwell(NSDictionary *window, NSString *directory) 
     NSEvent *up = [NSEvent mouseEventWithType:NSEventTypeLeftMouseUp location:NSZeroPoint modifierFlags:0 timestamp:0 windowNumber:0 context:nil eventNumber:2 clickCount:1 pressure:0];
     [gesture mouseDown:down]; [gesture mouseUp:up]; [gesture release];
     assert(callbackCount == callbacks && beepCount == beeps + 2 && picker.pending);
+    drainUntil(^BOOL { return !picker.querying; }); // A blocked click can refresh the pointer after tracking resumes.
     [picker keyDown:key(126)];
     assert(!picker.pending && CGRectEqualToRect(picker.rect, containerRect) && callbackCount == callbacks);
     calls = atomic_load(&hitCount); drainFor(.15); assert(atomic_load(&hitCount) == calls);
@@ -240,10 +257,11 @@ static void testCaptureAncestorDwell(NSDictionary *window, NSString *directory) 
     [picker sample]; drainUntil(^BOOL { return !picker.pending && !picker.querying; });
     hitGroup = YES; fixtureMouse.y = 853; [picker sample]; drainUntil(^BOOL { return !picker.querying; }); assert(picker.pending);
     hitGate = dispatch_semaphore_create(0); hitEntered = dispatch_semaphore_create(0);
+    calls = atomic_load(&hitCount);
     fixtureMouse = NSMakePoint(-220, 870); [picker sample];
-    assert(dispatch_semaphore_wait(hitEntered, dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC)) == 0);
+    waitForHit(calls + 1);
     drainFor(.13); fixtureMouse = NSMakePoint(-150, 853); [picker sample]; calls = atomic_load(&hitCount);
-    dispatch_semaphore_signal(hitGate); drainUntil(^BOOL { return atomic_load(&hitCount) == calls + 1; });
+    dispatch_semaphore_signal(hitGate); waitForHit(calls + 1);
     dispatch_semaphore_signal(hitGate); drainUntil(^BOOL { return !picker.querying; });
     assert(picker.pending && CGRectEqualToRect(picker.rect, (CGRect){leafOrigin, {40, 24}}));
     dispatch_release(hitGate); dispatch_release(hitEntered); hitGate = hitEntered = nil;
@@ -271,9 +289,23 @@ static void testCaptureSelectionRefresh(NSDictionary *window, NSString *director
     picker.elementMode = YES; picker.desktopTop = 1000;
     [picker sample]; drainUntil(^BOOL { return !picker.querying; });
     assert(picker.elements.count == 2 && usableCaptureRect(picker.rect));
+    unsigned int applicationCount = atomic_load(&applicationCreations); fixtureMouse.x += .125;
+    [picker sample]; drainUntil(^BOOL { return !picker.querying; });
+    fprintf(stderr, "AX application roots %u -> %u\n", applicationCount, atomic_load(&applicationCreations));
+    assert(atomic_load(&applicationCreations) == applicationCount);
+    CIIPCaptureSelectionView *eventView = [[CIIPCaptureSelectionView alloc] initWithFrame:NSMakeRect(0, 0, 10, 10)]; eventView.picker = picker;
+    unsigned int eventCalls = atomic_load(&hitCount); fixtureMouse.x += .25;
+    NSEvent *move = [NSEvent mouseEventWithType:NSEventTypeMouseMoved location:NSZeroPoint modifierFlags:0 timestamp:0 windowNumber:0 context:nil eventNumber:1 clickCount:0 pressure:0];
+    [eventView mouseMoved:move]; drainUntil(^BOOL { return !picker.querying; });
+    fprintf(stderr, "pointer event query count %u -> %u\n", eventCalls, atomic_load(&hitCount));
+    assert(atomic_load(&hitCount) == eventCalls + 1); [eventView release];
     [picker keyDown:key(126)];
     CGRect selected = picker.rect;
     renderCaptureFrame(picker, directory, @"resolved.png");
+    leafOrigin.x += .25; fixtureMouse.x += .25; [picker sample]; drainUntil(^BOOL { return !picker.querying; });
+    assert(picker.elementIndex == 1 && CGRectEqualToRect(picker.rect, selected));
+    assert(NSRectToCGRect([picker.elements[0][@"rect"] rectValue]).origin.x == leafOrigin.x); // Keep the exact new geometry.
+    leafOrigin.x -= .25; fixtureMouse.x += .25; [picker sample]; drainUntil(^BOOL { return !picker.querying; });
 
     // Lazy providers may return a childless Group while its already-resolved leaf remains live.
     hitGroup = YES; fixtureMouse.x += 1; [picker sample];
@@ -291,8 +323,9 @@ static void testCaptureSelectionRefresh(NSDictionary *window, NSString *director
     drainUntil(^BOOL { return !picker.querying; }); [picker keyDown:key(126)];
 
     hitGate = dispatch_semaphore_create(0); hitEntered = dispatch_semaphore_create(0);
+    unsigned int calls = atomic_load(&hitCount);
     fixtureMouse.x += 1; [picker sample];
-    assert(dispatch_semaphore_wait(hitEntered, dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC)) == 0);
+    waitForHit(calls + 1);
     renderCaptureFrame(picker, directory, @"refreshing.png");
     assert(picker.pending && CGRectEqualToRect(picker.rect, selected));
     NSUInteger callbacks = callbackCount, beeps = beepCount;
@@ -305,13 +338,13 @@ static void testCaptureSelectionRefresh(NSDictionary *window, NSString *director
 
     // A completed hit remains useful after micro-movement inside its innermost element.
     // Show it before the pointer stops, then recheck the exact latest point before allowing confirmation.
-    unsigned int calls = atomic_load(&hitCount);
+    calls = atomic_load(&hitCount);
     picker.elements = nil; picker.elementIndex = 0; picker.rect = selected;
     fixtureMouse.x += 1; [picker sample];
-    assert(dispatch_semaphore_wait(hitEntered, dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC)) == 0);
+    waitForHit(calls + 1);
     fixtureMouse.x += 1; [picker sample];
     dispatch_semaphore_signal(hitGate);
-    drainUntil(^BOOL { return atomic_load(&hitCount) == calls + 2; });
+    waitForHit(calls + 2);
     assert(picker.querying && picker.pending && CGRectEqualToRect(picker.rect, CGRectMake(-160, 120, 40, 24)));
     dispatch_semaphore_signal(hitGate); drainUntil(^BOOL { return !picker.querying; });
     assert(!picker.pending); [picker keyDown:key(126)];
@@ -319,7 +352,7 @@ static void testCaptureSelectionRefresh(NSDictionary *window, NSString *director
     // Slow AX response while moving continuously: coalesce to the latest point without blank frames.
     calls = atomic_load(&hitCount);
     fixtureMouse.x = -122; [picker sample];
-    assert(dispatch_semaphore_wait(hitEntered, dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC)) == 0);
+    waitForHit(calls + 1);
     for (NSUInteger i = 0; i < 8; i++) {
         fixtureMouse.x += 1; [picker sample];
         assert(picker.pending && CGRectEqualToRect(picker.rect, selected));
@@ -327,7 +360,7 @@ static void testCaptureSelectionRefresh(NSDictionary *window, NSString *director
     }
     assert(atomic_load(&hitCount) == calls + 1);
     dispatch_semaphore_signal(hitGate);
-    drainUntil(^BOOL { return atomic_load(&hitCount) == calls + 2; });
+    waitForHit(calls + 2);
     assert(picker.pending && CGRectEqualToRect(picker.rect, selected));
     dispatch_semaphore_signal(hitGate);
     drainUntil(^BOOL { return !picker.querying; });
@@ -372,12 +405,12 @@ static void testCaptureSelectionRefresh(NSDictionary *window, NSString *director
     hitGate = dispatch_semaphore_create(0); hitEntered = dispatch_semaphore_create(0);
     calls = atomic_load(&hitCount);
     fixtureMouse.x += 1; [picker sample];
-    assert(dispatch_semaphore_wait(hitEntered, dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC)) == 0);
+    waitForHit(calls + 1);
     fixtureWindows = @[windowInfo(1003, 13, CGRectMake(-200, 100, 200, 140), 1)];
     fixtureMouse.x += 1; [picker sample]; fixtureMouse.x -= 1; [picker sample];
     assert(!usableCaptureRect(picker.rect));
     dispatch_semaphore_signal(hitGate);
-    drainUntil(^BOOL { return atomic_load(&hitCount) == calls + 2; });
+    waitForHit(calls + 2);
     assert(picker.pending && !usableCaptureRect(picker.rect));
     dispatch_semaphore_signal(hitGate);
     drainUntil(^BOOL { return !picker.querying; });
@@ -412,7 +445,7 @@ int main(int argc, const char **argv) {
         // Other ciip windows, such as pins, remain valid screenshot targets.
         assert(captureWindowAtPoint(@[own], CGPointMake(-150, 130), [NSSet set]) == own);
         assert(!usableCaptureRect(CGRectMake(0, 0, NAN, 1)));
-        NSArray *elements = captureElementsAtPoint(1002, CGPointMake(-150, 130), CGRectMake(-180, 110, 100, 80));
+        NSArray *elements = captureElementsAtPoint(1002, CGPointMake(-150, 130), CGRectMake(-180, 110, 100, 80), nil);
         assert(elements.count == 2); // Duplicate rects and cyclic parents do not repeat candidates.
         assert(NSEqualRects([elements[0][@"rect"] rectValue], NSMakeRect(-160, 120, 40, 24)));
         assert(NSEqualRects([elements[1][@"rect"] rectValue], NSMakeRect(-180, 110, 100, 80)));
@@ -420,7 +453,7 @@ int main(int argc, const char **argv) {
         NSArray *unrelated = @[@{@"rect":[NSValue valueWithRect:NSRectFromCGRect(target)], @"label":@"容器", @"element":(id)root}];
         assert(captureElementsKeepingLeaf(unrelated, elements, CGPointMake(-150, 130), target) == unrelated);
         hitContainer = YES; rootChildrenAvailable = YES;
-        NSArray *containerHit = captureElementsAtPoint(1002, CGPointMake(-150, 130), target);
+        NSArray *containerHit = captureElementsAtPoint(1002, CGPointMake(-150, 130), target, nil);
         if (containerHit.count && argc > 1) {
             CIIPCapturePicker *preview = [[CIIPCapturePicker alloc] init]; preview.elementMode = YES; preview.desktopTop = 1000;
             preview.rect = NSRectToCGRect([containerHit[0][@"rect"] rectValue]);
@@ -435,7 +468,7 @@ int main(int argc, const char **argv) {
             sameBoundsSibling = sameBounds == 1; equalAreaSibling = sameBounds == 2;
             for (NSUInteger reverse = 0; reverse < 2; reverse++) {
                 reverseBranches = reverse != 0;
-                NSArray *branchHit = captureElementsAtPoint(1002, CGPointMake(-150, 130), target);
+                NSArray *branchHit = captureElementsAtPoint(1002, CGPointMake(-150, 130), target, nil);
                 if (branchHit.count && argc > 1) {
                     CIIPCapturePicker *preview = [[CIIPCapturePicker alloc] init]; preview.elementMode = YES; preview.desktopTop = 1000;
                     preview.rect = NSRectToCGRect([branchHit[0][@"rect"] rectValue]);
@@ -449,18 +482,18 @@ int main(int argc, const char **argv) {
         }
         overlappingBranches = sameBoundsSibling = equalAreaSibling = reverseBranches = NO;
         sameFrameDescendants = YES;
-        NSArray *sameFrameHit = captureElementsAtPoint(1002, CGPointMake(-150, 130), target);
+        NSArray *sameFrameHit = captureElementsAtPoint(1002, CGPointMake(-150, 130), target, nil);
         sameFrameDescendants = NO; framelessParent = YES;
-        NSArray *framelessHit = captureElementsAtPoint(1002, CGPointMake(-150, 130), target);
+        NSArray *framelessHit = captureElementsAtPoint(1002, CGPointMake(-150, 130), target, nil);
         framelessParent = NO;
         fprintf(stderr, "AX boundaries same-frame=%lu frameless-first=%s\n", (unsigned long)sameFrameHit.count, NSStringFromRect([framelessHit.firstObject[@"rect"] rectValue]).UTF8String);
         assert(sameFrameHit.count == 1 && NSEqualRects([sameFrameHit[0][@"rect"] rectValue], NSRectFromCGRect(target)));
         assert(framelessHit.count > 0 && NSEqualRects([framelessHit[0][@"rect"] rectValue], NSMakeRect(-160, 120, 40, 24)));
         rootChildrenAvailable = NO;
-        assert(captureElementsAtPoint(1002, CGPointMake(-150, 130), target).count == 0);
+        assert(captureElementsAtPoint(1002, CGPointMake(-150, 130), target, nil).count == 0);
         hitContainer = NO; rootChildrenAvailable = NO;
         unavailable = YES;
-        assert(captureElementsAtPoint(1002, CGPointMake(-150, 130), target).count == 0);
+        assert(captureElementsAtPoint(1002, CGPointMake(-150, 130), target, nil).count == 0);
         unavailable = NO;
         testCaptureSelectionRefresh(other, argc > 1 ? [NSString stringWithUTF8String:argv[1]] : nil);
 

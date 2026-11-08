@@ -808,7 +808,7 @@ function updateShortcutLabels(status:ShortcutStatus) {
  for(const [action,label]of ([['area','区域截图'],['window','窗口截图'],['element','元素截图'],['screen','全屏截图']] as const)){
   const button=document.querySelector<HTMLButtonElement>(`[data-capture=${action}]`);if(!button)continue;
   let key=button.querySelector('kbd')!;if(!key){key=document.createElement('kbd');button.append(key);}const display=status?.[action]?.display;key.textContent=display==='未设置'?'':display||'';
-  button.title=[label,key.textContent].filter(Boolean).join(' ');
+  button.title=[label,key.textContent,action==='element'?'单击选择元素，拖动框选区域':''].filter(Boolean).join(' ');
  }
  const area=status?.area?.display||'',pin=status?.pin?.display||'';
  $('capture').title=`区域截图 ${area}`.trim();$('start-capture').querySelector('kbd')!.textContent=area;
