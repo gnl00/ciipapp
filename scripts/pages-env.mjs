@@ -8,7 +8,7 @@ export function pagesEnvironment(repository,override='',releaseURL='') {
   if(releaseURL&&!/^https:\/\//.test(releaseURL))throw Error('CIIP_RELEASE_URL must use HTTPS');
   if(/[\r\n]/.test(releaseURL))throw Error('release URL must be one line');
   const repositoryURL=`https://github.com/${repository}`;
-  return {VITE_BASE_PATH:base,VITE_REPOSITORY_URL:repositoryURL,VITE_RELEASE_URL:releaseURL||`${repositoryURL}/releases`};
+  return {VITE_BASE_PATH:base,VITE_REPOSITORY_URL:repositoryURL,VITE_RELEASE_URL:releaseURL||`${repositoryURL}/releases/latest`};
 }
 if(process.argv[1]&&import.meta.url===pathToFileURL(process.argv[1]).href){
   if(!process.env.GITHUB_ENV)throw Error('GITHUB_ENV is required');

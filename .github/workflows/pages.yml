@@ -34,7 +34,7 @@ jobs:
           node-version: '24'
           cache: npm
       - run: npm ci
-      # A stable Releases list reflects tag publications without another Pages deployment.
+      # Architecture downloads resolve the latest release without another Pages deployment.
       - name: Set repository URLs
         env:
           PAGES_BASE_PATH: ${{ vars.PAGES_BASE_PATH }}

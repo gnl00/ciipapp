@@ -18,6 +18,7 @@
     <linearGradient id="near-hill" x2="1" y2="1"><stop stop-color="#6d8b78"/><stop offset="1" stop-color="#3d6558"/></linearGradient>
     <symbol id="ciip-symbol" viewBox="0 0 32 32"><path d="M13.2 3.6H4.7C3.7 3.6 3.2 4.1 3.2 5.2C2.2 10.6 4.1 17.5 8.2 20.4C10.2 21.8 12.1 22.5 15 22.5H19C23.1 22.5 27.8 19.1 28.3 16.1C28.5 14.4 23.2 12.5 20.4 12.5H15V29.2" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/><g fill="currentColor"><circle cx="10.1" cy="8.9" r="1.4"/><circle cx="18" cy="8.9" r="1.4"/></g></symbol>
     <symbol id="landscape" viewBox="0 0 800 520"><path fill="url(#sky)" d="M0 0h800v520H0z"/><circle cx="610" cy="125" r="53" fill="#dfba7e"/><path d="M0 292C130 250 200 115 330 168s190 170 300 57 170-41 170-41v336H0Z" fill="#9db1a0"/><path d="M0 340c145-130 227-61 353-25s182-113 447-59v264H0Z" fill="#829c89"/><path d="M0 414c151-162 352 12 491-71S701 325 800 377v143H0Z" fill="url(#near-hill)"/><path d="M437 520c-3-85 127-92 111-152-6-22-30-33-62-32" fill="none" stroke="#d7c3a2" stroke-width="25"/><path d="M443 520c-3-84 128-95 109-153" fill="none" stroke="#f0dfbf" stroke-width="3" opacity=".65"/><path d="m120 367 3-31m-12 7 24-3m525 71 2-32m-12 9 23-2" stroke="#416657" stroke-width="5" stroke-linecap="round"/></symbol>
+    <symbol id="download-icon" viewBox="0 0 24 24"><path d="M12 3v12m-5-5 5 5 5-5M4 16v4h16v-4"/></symbol>
     <symbol id="capture-icon" viewBox="0 0 24 24"><path d="M8 3H4a1 1 0 0 0-1 1v4m13-5h4a1 1 0 0 1 1 1v4M3 16v4a1 1 0 0 0 1 1h4m8 0h4a1 1 0 0 0 1-1v-4M8 8h8v8H8z"/></symbol>
     <symbol id="pen-icon" viewBox="0 0 24 24"><path d="m14 4 6 6M4 20l2-7L17 2l5 5L11 18Z"/></symbol>
     <symbol id="pin-icon" viewBox="0 0 24 24"><path d="m9 3 12 12M11 5l-5 6-3 1 9 9 1-3 6-5M8 16l-6 6"/></symbol>
@@ -98,7 +99,13 @@
 
     <section id="download" class="download-section shell" aria-labelledby="download-title">
       <div class="download-heading"><svg class="download-mark"><use href="#ciip-symbol"/></svg><div><p class="section-label">放进你的日常</p><h2 id="download-title">一小块截图，<br>刚好在手边。</h2></div></div>
-      <div class="download-info"><a id="release-link" class="button button-primary" href="https://github.com/gnl00/ciipapp/releases">查看 GitHub 发布版本</a><ul class="release-architectures" aria-label="安装包芯片版本"><li><strong>Apple 芯片</strong><span>选择 arm64 安装包</span></li><li><strong>Intel 芯片</strong><span>选择 x86_64 安装包</span></li></ul><a class="source-link" data-repository-link href="https://github.com/gnl00/ciipapp">在 GitHub 查看源码</a></div>
+      <div class="download-info">
+        <ul class="release-architectures" aria-label="下载对应芯片的安装包">
+          <li><a class="button button-primary architecture-download" data-download-arch="arm64" href="https://github.com/gnl00/ciipapp/releases/latest" aria-label="下载 Apple 芯片版 ciip（ARM64 DMG）"><svg class="icon" aria-hidden="true"><use href="#download-icon"/></svg><span>Apple 芯片<small>ARM64 · DMG</small></span></a></li>
+          <li><a class="button button-primary architecture-download" data-download-arch="x86_64" href="https://github.com/gnl00/ciipapp/releases/latest" aria-label="下载 Intel 芯片版 ciip（x86_64 DMG）"><svg class="icon" aria-hidden="true"><use href="#download-icon"/></svg><span>Intel 芯片<small>x86_64 · DMG</small></span></a></li>
+        </ul>
+        <div class="download-more"><a id="release-link" class="source-link" href="https://github.com/gnl00/ciipapp/releases/latest">最新版本与更新说明</a><a class="source-link" data-repository-link href="https://github.com/gnl00/ciipapp">GitHub 源码</a></div>
+      </div>
     </section>
 
     <section class="faq shell" aria-labelledby="faq-title"><h2 id="faq-title">几个常见问题</h2><div class="faq-list">

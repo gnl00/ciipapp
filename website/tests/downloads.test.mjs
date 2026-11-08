@@ -1,0 +1,48 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {latestReleaseAPI,releaseDownloads,fetchLatestDownloads} from '../src/downloads.ts';
+
+const repository='https://github.com/gnl00/ciipapp';
+function fixture(tag='v0.10.1'){
+  return {tag_name:tag,draft:false,prerelease:false,assets:['arm64','x86_64'].map(arch=>{
+    const name=`ciip-${tag}-macos-${arch}.dmg`;
+    return {name,browser_download_url:`${repository}/releases/download/${tag}/${name}`};
+  })};
+}
+test('both architectures follow the actual latest tag instead of a fixed version',()=>{
+  for(const tag of ['v0.10.1','v0.11.0']){
+    const value=fixture(tag),result=releaseDownloads(value,repository);
+    assert.deepEqual(result,{tag,arm64:value.assets[0].browser_download_url,x86_64:value.assets[1].browser_download_url});
+  }
+});
+test('drafts, prereleases and incomplete architecture pairs cannot become direct downloads',()=>{
+  assert.ok(releaseDownloads(fixture(),repository));
+  for(const changes of [{draft:true},{prerelease:true},{tag_name:'v0.11.0-beta.1'},{assets:fixture().assets.slice(0,1)}])assert.equal(releaseDownloads({...fixture(),...changes},repository),null);
+  for(const value of [null,{},'invalid'])assert.equal(releaseDownloads(value,repository),null);
+});
+test('matching names must also resolve to the same repository, tag and DMG path',()=>{
+  assert.ok(releaseDownloads(fixture(),repository));
+  for(const url of ['javascript:alert(1)',`${repository.replace('gnl00','someone')}/releases/download/v0.10.1/ciip-v0.10.1-macos-arm64.dmg`,`${repository}/releases/download/v0.10.0/ciip-v0.10.1-macos-arm64.dmg`,`${repository}/releases/download/v0.10.1/ciip-v0.10.1-macos-arm64.zip`]){
+    const value=fixture();value.assets[0].browser_download_url=url;
+    assert.equal(releaseDownloads(value,repository),null);
+  }
+});
+test('public latest-release lookup resolves the two DMG URLs without authentication',async()=>{
+  let called=false;
+  const result=await fetchLatestDownloads(repository,async(url,options)=>{
+    called=true;assert.equal(url,'https://api.github.com/repos/gnl00/ciipapp/releases/latest');
+    assert.equal(options.headers.Accept,'application/vnd.github+json');assert.ok(options.signal);
+    return Response.json(fixture('v0.11.0'));
+  });
+  assert.ok(called);assert.equal(result.tag,'v0.11.0');
+});
+test('HTTP, network and JSON failures preserve the latest-release fallback',async()=>{
+  for(const request of [async()=>new Response('',{status:403}),async()=>{throw Error('offline');},async()=>new Response('invalid JSON')])assert.equal(await fetchLatestDownloads(repository,request),null);
+});
+test('only GitHub repository URLs are sent to the public release API',async()=>{
+  assert.equal(latestReleaseAPI(repository+'/'),'https://api.github.com/repos/gnl00/ciipapp/releases/latest');
+  for(const url of ['https://example.com/project','https://github.com/gnl00/ciipapp/releases','http://github.com/gnl00/ciipapp']){
+    assert.equal(latestReleaseAPI(url),null);
+    assert.equal(await fetchLatestDownloads(url,async()=>{assert.fail('invalid repository must not make a request');}),null);
+  }
+});

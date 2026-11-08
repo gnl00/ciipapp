@@ -33,7 +33,7 @@ npm run preview -w @ciip/website
 2. 仓库Settings → Pages → Source选择GitHub Actions。
 3. `.github/workflows/pages.yml`在main相关文件更新后构建并部署，也可手动触发。
 
-工作流依据github.repository自动生成项目路径、源码地址和Releases地址；当前仓库注入`/ciipapp/`、`https://github.com/gnl00/ciipapp`及其`/releases`列表。普通仓库会用`/仓库名/`，账号.github.io仓库使用`/`。这与[Vite的Pages配置](https://vite.dev/guide/static-deploy#github-pages)一致，避免图片/脚本在子路径404。
+工作流依据github.repository自动生成项目路径、源码地址和Releases地址；当前仓库注入`/ciipapp/`、`https://github.com/gnl00/ciipapp`及其`/releases/latest`地址。普通仓库会用`/仓库名/`，账号.github.io仓库使用`/`。这与[Vite的Pages配置](https://vite.dev/guide/static-deploy#github-pages)一致，避免图片/脚本在子路径404。
 
 只上传website/dist，不上传桌面应用、frontend/dist、原型、安装器或本地QA。npm lockfile随源码提交，node_modules与生成的dist忽略。
 
@@ -45,13 +45,13 @@ npm run preview -w @ciip/website
 | --- | --- |
 | VITE_BASE_PATH | 静态资源基础路径，Pages自动注入 |
 | VITE_REPOSITORY_URL | 源码URL，Pages从实际仓库注入；本地默认实际仓库地址 |
-| VITE_RELEASE_URL | 下载入口，默认实际仓库的Releases列表；可选HTTPS覆盖 |
+| VITE_RELEASE_URL | 最新版本说明与异常回退地址，默认实际仓库的/releases/latest；可选HTTPS覆盖 |
 
-默认下载入口为[GitHub Releases列表](https://github.com/gnl00/ciipapp/releases)。下载区只保留发布按钮、芯片版本说明与源码链接。这里使用`/releases`而非尚无版本时会返回404的`/releases/latest`；不把本地build路径或尚不存在的安装包URL作为下载链接，也不依赖浏览器调用GitHub API。
+下载区提供Apple芯片（arm64）和Intel芯片（x86_64）两个DMG下载按钮。页面向GitHub公开API请求一次最新正式Release元数据，从其assets中按实际tag与架构匹配安装包；后续发版无需重新部署官网。按钮链接使用GitHub返回的真实附件地址，并核对仓库、tag和文件名，不写死某一版本。查询期间点击会等待同一次请求完成；请求失败、超时或禁用JavaScript时回到[最新版本页](https://github.com/gnl00/ciipapp/releases/latest)。元数据请求不使用认证信息，仍受GitHub公开API的可用性及访问额度限制。
 
 版本发布由[release.yml](../.github/workflows/release.yml)处理：推送`v0.10.1`这类版本tag，Actions分别在Apple芯片和Intel原生runner构建arm64与x86_64包；两种架构全部成功并验证产物后才公开Release。每种架构提供DMG与ZIP，并附SHA256校验清单。版本同步、tag命令、签名和失败重跑说明见[RELEASING.md](RELEASING.md)。两种芯片的下载安装与系统功能仍需分别做实机验收。
 
-不必设置Actions变量`CIIP_RELEASE_URL`。默认Releases列表会显示后续发布的版本，发布安装包无需重新部署官网。只有改用其他公开下载入口时才设置该HTTPS变量，再重新部署Pages。`website/.env.example`提供本地覆盖示例。
+不必设置Actions变量`CIIP_RELEASE_URL`。默认`/releases/latest`会跟随后续正式版本。只有改用其他公开版本说明或回退入口时才设置该HTTPS变量，再重新部署Pages。实际DMG地址仍从源码仓库的最新Release解析。`website/.env.example`提供本地覆盖示例。
 
 后续若绑定自定义域名，在Pages中配置域名与DNS，并将Actions变量PAGES_BASE_PATH设为`/`。
 

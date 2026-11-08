@@ -1,6 +1,7 @@
 import './styles/site.css';
 import {demoStatus,initialDemoState,updateDemo,type DemoAction} from './demo.ts';
 import {resolveSiteConfig} from './config.ts';
+import {fetchLatestDownloads,type DownloadArchitecture} from './downloads.ts';
 function element<T extends HTMLElement>(selector:string):T {
   const found=document.querySelector<T>(selector);if(!found)throw new Error(`Missing website element: ${selector}`);return found;
 }
@@ -8,6 +9,18 @@ const site=resolveSiteConfig({repositoryUrl:import.meta.env.VITE_REPOSITORY_URL,
 for(const link of document.querySelectorAll<HTMLAnchorElement>('[data-repository-link]'))if(site.repositoryUrl){link.href=site.repositoryUrl;link.hidden=false;}
 element<HTMLAnchorElement>('#release-link').href=site.releaseUrl;
 element('#site-version').textContent=site.version;
+const downloads=fetchLatestDownloads(site.repositoryUrl);
+for(const link of document.querySelectorAll<HTMLAnchorElement>('[data-download-arch]')){
+  const architecture=link.dataset.downloadArch as DownloadArchitecture;
+  link.href=site.releaseUrl;
+  void downloads.then(release=>{if(release){link.href=release[architecture];link.dataset.downloadReady='true';}});
+  // A quick click waits for the same request instead of opening the release page mid-load.
+  link.addEventListener('click',event=>{
+    if(link.dataset.downloadReady||event.button!==0||event.metaKey||event.ctrlKey||event.shiftKey||event.altKey)return;
+    event.preventDefault();
+    void downloads.then(release=>window.location.assign(release?.[architecture]??site.releaseUrl));
+  });
+}
 const demo=element('#demo'),picture=element('#demo-picture'),status=element('#demo-status');
 const annotation=element<HTMLButtonElement>('[data-demo-action="annotate"]'),pin=element<HTMLButtonElement>('[data-demo-action="pin"]'),close=element<HTMLButtonElement>('[data-demo-action="close"]');
 let state={...initialDemoState};

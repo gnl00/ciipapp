@@ -1,8 +1,17 @@
-# ciip
-
-macOS 截图与贴图工具。截下来，贴在手边。
-
-[官网](https://gnl00.github.io/ciipapp/) · [下载](https://github.com/gnl00/ciipapp/releases) · [源码](https://github.com/gnl00/ciipapp)
+<div align="center">
+  <img src="resources/icon.png" width="112" height="112" alt="ciip 图标">
+  <h1>ciip</h1>
+  <p>macOS 截图与贴图工具。截下来，贴在手边。</p>
+  <p>
+    <a href="https://github.com/gnl00/ciipapp/releases/latest"><img src="https://img.shields.io/github/v/release/gnl00/ciipapp?color=cc582e" alt="GitHub 最新正式 Release 版本"></a>
+  </p>
+  <p>macOS · Apple Silicon (ARM64) · Intel (x86_64)</p>
+  <p>
+    <a href="https://gnl00.github.io/ciipapp/">官网</a> ·
+    <a href="https://github.com/gnl00/ciipapp/releases/latest">最新版本</a> ·
+    <a href="https://github.com/gnl00/ciipapp">源码</a>
+  </p>
+</div>
 
 ## 功能
 
@@ -16,7 +25,7 @@ macOS 截图与贴图工具。截下来，贴在手边。
 
 ## 安装
 
-在 [GitHub Releases](https://github.com/gnl00/ciipapp/releases) 选择对应芯片的 DMG 或 ZIP：Apple Silicon 使用 `arm64`，Intel Mac 使用 `x86_64`。打开 DMG 后将 ciip.app 拖到 Applications，或解压 ZIP。
+在 [最新版本](https://github.com/gnl00/ciipapp/releases/latest) 选择对应芯片的 DMG 或 ZIP：Apple Silicon 使用 `arm64`，Intel Mac 使用 `x86_64`。打开 DMG 后将 ciip.app 拖到 Applications，或解压 ZIP。
 
 当前构建使用 ad hoc 签名，尚未进行 Apple 公证。首次打开如被 macOS 阻止，请确认下载来源并参考 [Apple 的说明](https://support.apple.com/guide/mac-help/mh40616/mac)。截图需要屏幕录制权限；应用中的权限引导可打开对应系统设置。
 
