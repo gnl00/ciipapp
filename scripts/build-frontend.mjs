@@ -1,0 +1,12 @@
+import {build} from 'vite';
+import {readFile,writeFile} from 'node:fs/promises';
+import {fileURLToPath} from 'node:url';
+const root=fileURLToPath(new URL('../frontend/',import.meta.url));
+await build({root,configFile:root+'vite.config.ts'});
+await build({root,configFile:false,publicDir:false,build:{target:'safari15',outDir:root+'dist',emptyOutDir:false,minify:false,lib:{entry:root+'src/pin.ts',name:'CiipPin',formats:['iife'],fileName:()=> 'pin.js'}}});
+const css=await readFile(root+'src/styles/pin.css','utf8');
+let html=(await readFile(root+'src/pin.template.html','utf8')).replace('{{PIN_STYLE}}',css).replaceAll('%','%%');
+for(const key of ['TOKENS','PIN_SCRIPT','INITIAL'])html=html.replace('{{'+key+'}}','%s');
+if((html.match(/(?<!%)%s/g)||[]).length!==3||/\{\{[A-Z_]+\}\}/.test(html))throw Error('pin template must expose exactly three native arguments');
+await writeFile(root+'dist/pin.template.html',html);
+await writeFile(root+'dist/tokens.css',await readFile(root+'src/styles/tokens.css','utf8'));

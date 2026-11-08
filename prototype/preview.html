@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ciip 0.10.0 预览</title>
+  <link rel="stylesheet" href="../frontend/src/styles/tokens.css">
+  <link rel="stylesheet" href="../frontend/src/styles/style.css">
+  <link rel="stylesheet" href="../frontend/src/styles/settings.css">
+  <link rel="stylesheet" href="../frontend/src/styles/quick.css">
+</head>
+<body>
+  <nav class="toolbar" aria-label="截图工具栏">
+    <div class="tool-group capture-group">
+      <button id="capture" class="capture-button" title="区域截图 ⇧⌘2" aria-label="区域截图"><span data-icon="capture"></span><span>截图</span></button>
+      <button id="capture-menu-toggle" aria-label="更多截图方式" aria-expanded="false"><span data-icon="chevron"></span></button>
+      <div id="capture-menu" class="popover menu-panel" data-anchor="capture" role="menu" aria-label="截图方式" hidden>
+
+        <button role="menuitem" data-capture="area"><span data-icon="capture"></span><span>区域截图</span><kbd>⇧⌘2</kbd></button>
+        <button role="menuitem" data-capture="window"><span data-icon="window"></span><span>窗口截图</span><kbd>空格切换</kbd></button>
+        <button role="menuitem" data-capture="screen"><span data-icon="screen"></span><span>全屏截图</span></button>
+        <hr><button id="open" role="menuitem"><span data-icon="image"></span><span>打开图片…</span><kbd>⌘O</kbd></button>
+      </div>
+    </div>
+    <span class="divider"></span>
+    <div id="tools" class="tool-group" role="toolbar" aria-label="标注工具"></div>
+    <span class="divider"></span>
+    <div class="tool-group"><button id="undo" aria-label="撤销" title="撤销 ⌘Z" disabled><span data-icon="undo"></span></button><button id="redo" aria-label="重做" title="重做 ⇧⌘Z" disabled><span data-icon="redo"></span></button></div>
+    <span class="toolbar-space"></span>
+    <div class="tool-group outputs">
+      <button id="pin" aria-label="贴图" title="贴图 ⇧⌘P" disabled><span data-icon="pin"></span><span class="action-label" id="pin-label">贴图</span></button>
+      <button id="save" aria-label="保存图片" title="保存 ⌘S" disabled><span data-icon="save"></span><span class="action-label">保存</span></button>
+      <button id="copy" class="copy-button" aria-label="复制图片" title="复制 ⌘C" disabled><span data-icon="copy"></span><span>复制</span></button>
+    </div>
+  </nav>
+  <div class="properties" aria-label="工具属性">
+    <span id="tool-name">选择</span>
+    <div id="colors" class="colors" role="group" aria-label="标注颜色"></div>
+    <label id="stroke-label" class="stroke-label">粗细 <input id="stroke" aria-label="线条粗细" type="range" min="1" max="32" step="1" value="4"><output id="stroke-value">4</output></label>
+    <div id="number-options" class="tool-options" hidden>
+      <div id="number-style" class="segmented" role="group" aria-label="编号圆点样式">
+        <button data-value="filled" aria-label="实心编号" title="实心编号"><span class="number-sample filled">1</span></button>
+        <button data-value="outline" aria-label="镂空编号" title="镂空编号"><span class="number-sample outline">1</span></button>
+      </div>
+      <label>编号 <input id="number-value" aria-label="圆点编号" type="number" min="1" max="999" value="1"></label>
+      <label>大小 <input id="number-size" aria-label="编号圆点大小" type="range" min="12" max="160" step="1" value="16"></label>
+    </div>
+    <div id="arrow-options" class="tool-options" hidden>
+      <div id="arrow-style" class="segmented" role="group" aria-label="箭头样式">
+        <button data-value="line" aria-label="直线箭头" title="直线箭头"><span data-icon="arrow-line"></span></button>
+        <button data-value="curved" aria-label="弯曲箭头" title="弯曲箭头 · 拖动控制点调节弧度"><span data-icon="arrow-curved"></span></button>
+        <button data-value="tapered" aria-label="渐粗箭头" title="渐粗箭头 · 起点细，终点粗"><span data-icon="arrow-tapered"></span></button>
+        <button data-value="direction" aria-label="方向箭头" title="方向箭头"><span data-icon="arrow-direction"></span></button>
+      </div>
+      <span id="arrow-style-label" class="option-value">直线</span>
+    </div>
+    <div id="text-options" class="tool-options" hidden><label>字号 <input id="font-size" aria-label="文字字号" type="number" min="8" max="512" value="24"></label><span class="text-instruction">点击画布输入 · 双击文字再编辑</span></div>
+    <div id="redact-options" class="tool-options" hidden>
+      <div id="redact-style" class="segmented" role="group" aria-label="遮盖样式">
+        <button data-value="blur" aria-label="高斯模糊" title="高斯模糊"><span data-icon="blur"></span></button>
+        <button data-value="pixelate" aria-label="马赛克打码" title="马赛克打码"><span data-icon="redact"></span></button>
+        <button data-value="solid" aria-label="实色遮盖" title="实色遮盖"><span data-icon="solid"></span></button>
+      </div>
+      <span id="redact-style-label" class="option-value">模糊</span>
+      <label id="redact-strength-label">强度 <input id="redact-strength" aria-label="遮盖强度" type="range" min="4" max="40" value="12"><output id="redact-strength-value">12</output></label>
+    </div>
+    <div id="ocr-options" class="tool-options" hidden><span id="ocr-status">自动识别图片中的文字</span><button id="ocr-copy" class="subtle-action"><span data-icon="copy"></span><span id="ocr-copy-label">复制全部</span></button><span class="text-instruction">拖动划选文字 · ⌘C 复制</span></div>
+    <button id="delete" class="text-button" hidden>删除标注 <kbd>⌫</kbd></button>
+    <span id="tool-hint" class="tool-hint">拖动标注以调整位置</span>
+  </div>
+  <main id="workspace">
+    <section id="empty" class="empty-state" aria-label="开始截图">
+      <div class="empty-mark" aria-hidden="true"><span data-icon="capture"></span><span class="empty-dot"></span></div>
+      <h1>截下来，贴在手边。</h1>
+      <p>截图自动复制，标注后随时贴图。<br>需要修改时，回到编辑器接着改。</p>
+      <button id="start-capture" class="primary">开始区域截图 <kbd>⇧⌘2</kbd></button>
+      <button id="start-open" class="text-button">或打开一张图片 <span>⌘O</span></button>
+      <div class="pin-guide"><span data-icon="pin"></span><span>贴图支持拖动、滚轮缩放和再次编辑<br><strong>双击贴图，即可关闭</strong></span></div>
+    </section>
+    <div id="canvas-scroll" hidden><div id="canvas-wrap"><div id="canvas-stage"><canvas id="canvas" tabindex="0" aria-label="截图编辑画布"></canvas><div id="selection-layer" role="group" aria-label="选中标注控制" hidden></div><div id="ocr-layer" aria-label="可选择的识别文字" hidden></div><textarea id="text-editor" aria-label="画布文字输入" placeholder="输入文字" maxlength="10000" rows="1" wrap="off" spellcheck="false" hidden></textarea></div></div></div>
+    <div id="selection-actions" class="selection-actions" role="group" aria-label="选中标注操作" hidden>
+      <button data-selection-action="rotate" aria-label="旋转标注" title="按住拖动旋转 · Shift 吸附 15° · 方向键微调"><span data-icon="rotate"></span></button>
+      <button data-selection-action="dismiss" aria-label="取消选择" title="取消选择 Esc"><span data-icon="dismiss"></span></button>
+    </div>
+    <div id="crop-actions" class="crop-actions" hidden><span>拖动选择保留区域</span><button id="apply-crop" class="primary">应用裁剪 <kbd>↵</kbd></button><button id="cancel-crop">取消</button></div>
+    <div id="toast" role="status" aria-live="polite" hidden></div>
+    <div id="busy" class="busy" hidden><span class="spinner"></span><span id="busy-label">正在处理…</span></div>
+  </main>
+  <footer><span class="wordmark" aria-label="ciip">ciip<span class="brand-dot" aria-hidden="true"></span></span><div class="appearance-anchor"><button id="appearance-toggle" aria-label="背景与圆角" title="背景与圆角" disabled><span data-icon="appearance"></span><span>背景与圆角</span></button>
+      <section id="appearance-panel" class="popover appearance-panel" data-anchor="appearance-toggle" data-placement="top" role="dialog" aria-label="背景与圆角" hidden>
+
+        <div class="panel-heading"><strong>背景与圆角</strong><button id="appearance-reset" class="text-button">重置</button></div>
+        <div id="background-presets" class="background-presets" role="group" aria-label="静态背景"></div>
+        <label class="panel-range"><span>边距</span><input id="background-padding" aria-label="背景边距" type="range" min="0" max="160" value="40"><output id="padding-value">40</output></label>
+        <label class="panel-range"><span>圆角</span><input id="image-radius" aria-label="截图圆角" type="range" min="0" max="120" value="0"><output id="radius-value">0</output></label>
+        <p>点击背景换一组配色 · 图片输出会保留当前效果</p>
+      </section></div><span id="filename" class="sr-only">截图，随手贴。</span><span id="status" class="sr-only" role="status" aria-live="polite">截图完成后，自动复制到剪贴板</span><span class="footer-space"></span><span id="dimensions"></span><div class="zoom-controls"><button id="zoom-out" aria-label="缩小" disabled>−</button><button id="zoom-value" title="点击恢复适应窗口" disabled>100%</button><button id="zoom-in" aria-label="放大" disabled>+</button><button id="fit" disabled>适应</button></div></footer>
+  <dialog id="replace-dialog"><h2>保留当前编辑？</h2><p>当前标注还没有复制、保存或贴图。打开新截图将替换当前画布。</p><div><button id="replace-cancel">继续编辑</button><button id="replace-confirm" class="primary">替换画布</button></div></dialog>
+  <script type="module" src="./mock.js"></script>
+  <script type="module" src="../frontend/src/app.ts"></script>
+</body>
+</html>

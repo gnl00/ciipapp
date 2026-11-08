@@ -1,0 +1,33 @@
+{
+  "name": "ciip-workspace",
+  "version": "0.10.1",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "frontend",
+    "website"
+  ],
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "dev:app": "npm run dev -w @ciip/frontend",
+    "dev:website": "npm run dev -w @ciip/website",
+    "build:app": "npm run build -w @ciip/frontend",
+    "build:website": "npm run build -w @ciip/website",
+    "build": "npm run build:app && npm run build:website",
+    "typecheck": "npm run typecheck --workspaces",
+    "test:app": "node --test frontend/tests/*.test.js prototype/*.test.mjs",
+    "test:website": "npm run test -w @ciip/website",
+    "test": "npm run typecheck && npm run test:app && npm run test:website && npm run test:build",
+    "dev:prototype": "vite --config prototype/vite.config.ts",
+    "build:prototype": "vite build --config prototype/vite.config.ts",
+    "test:build": "node --test scripts/*.test.mjs",
+    "test:bundle": "node --test frontend/tests/built-assets.test.mjs"
+  },
+  "devDependencies": {
+    "typescript": "7.0.2",
+    "vite": "8.3.6",
+    "@types/node": "^24.0.0"
+  }
+}

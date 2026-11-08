@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <title>ciip 0.9.1 · 快捷编辑</title>
+  <style>
+    body { margin:20px; background:#dce3dd; color:#37473c; font:13px system-ui; }
+    header { display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-bottom:16px; }
+    button { padding:8px 12px; border:1px solid #a6b2a6; border-radius:8px; background:#f4f6f1; color:inherit; }
+    #frame { position:relative; border-radius:14px; overflow:hidden; background:linear-gradient(135deg,#dae0df,#8eaca5 45%,#e3c8a8); box-shadow:0 20px 50px #203d2922; }
+    iframe { display:block; border:0; border-radius:14px; transform-origin:top left; background:transparent; }
+    #desktop { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; color:#466153; font-size:14px; }
+    #desktop[hidden], iframe[hidden] { display:none; }
+    #note { font-size:12px; line-height:1.8; }
+    #export-report { padding:10px 12px; border-radius:8px; background:#f4f6f1; font-size:12px; line-height:1.8; }
+  </style>
+</head>
+<body>
+  <header>
+    <strong>ciip 0.9.1</strong>
+    <button id="quick">截图后快捷编辑</button>
+    <button id="editor">完整编辑器</button>
+    <button id="compact">344 × 320</button>
+    <button id="normal">664 × 500</button>
+    <button id="settings">快捷键设置</button>
+  </header>
+  <div id="frame">
+    <div id="desktop" hidden>模拟桌面 · 快捷编辑已结束</div>
+    <iframe id="app" title="ciip 预览" width="664" height="500" src="./preview.html?mode=quick"></iframe>
+  </div>
+  <p id="note">界面预览 · 背景模拟桌面，独立紧凑窗口，工具栏位于图片下方。复制、保存和贴图使用内存回执。</p>
+  <p id="export-report" role="status" hidden></p>
+  <script>
+    const app = document.querySelector('#app');
+    const frame = document.querySelector('#frame');
+    const desktop = document.querySelector('#desktop');
+    const note = document.querySelector('#note');
+    const report = document.querySelector('#export-report');
+    let pending = null;
+
+    function fit() {
+      const scale = Math.min(1, document.body.clientWidth / Number(app.width));
+      app.style.transform = `scale(${scale})`;
+      frame.style.width = `${Number(app.width) * scale}px`;
+      frame.style.height = `${Number(app.height) * scale}px`;
+    }
+    function openPreview(mode, next = null) {
+      pending = next;
+      app.hidden = false;
+      desktop.hidden = true;
+      note.textContent = '界面预览 · 背景模拟桌面，独立紧凑窗口，工具栏位于图片下方。复制、保存和贴图使用内存回执。';
+      app.src = mode === 'quick' ? './preview.html?mode=quick' : './preview.html';
+    }
+    window.addEventListener('resize', fit);
+    fit();
+    document.querySelector('#quick').onclick = () => openPreview('quick');
+    document.querySelector('#editor').onclick = () => openPreview('editor', 'fixture');
+    for (const [id, width, height] of [['compact', 344, 320], ['normal', 664, 500]]) {
+      document.querySelector('#' + id).onclick = () => {
+        app.width = width;
+        app.height = height;
+        fit();
+      };
+    }
+    document.querySelector('#settings').onclick = () => {
+      if (app.hidden) {
+        openPreview('quick', 'settings');
+        return;
+      }
+      app.contentWindow.dispatchEvent(new app.contentWindow.CustomEvent('ciip:settings', {detail:{tab:'shortcuts'}}));
+    };
+    app.onload = () => {
+      const next = pending;
+      pending = null;
+      if (next === 'fixture') {
+        app.contentWindow.postMessage({type:'fixture'}, location.origin);
+      } else if (next === 'settings') {
+        app.contentWindow.dispatchEvent(new app.contentWindow.CustomEvent('ciip:settings', {detail:{tab:'shortcuts'}}));
+      } else if (next) {
+        app.contentWindow.dispatchEvent(new app.contentWindow.CustomEvent('ciip:quick-document', {detail:{documentJSON:next, token:'preview'}}));
+      }
+    };
+    window.addEventListener('message', event => {
+      if (event.origin !== location.origin || event.source !== app.contentWindow) return;
+      if (event.data?.type === 'quick-transfer') openPreview('editor', event.data.documentJSON);
+      if (event.data?.type === 'quick-closed' || event.data?.type === 'editor-closed') {
+        app.hidden = true;
+        desktop.hidden = false;
+        note.textContent = event.data.type === 'editor-closed' ? '贴图已就绪，编辑器已收起。点击“完整编辑器”重新打开。' : '快捷编辑已结束，当前显示模拟桌面。点击“截图后快捷编辑”重新体验。';
+        document.querySelector(event.data.type === 'editor-closed' ? '#editor' : '#quick').focus({preventScroll:true});
+      }
+      if (event.data?.type === 'export-result') {
+        const {action, width, height, bytes, layers} = event.data.result;
+        report.hidden = false;
+        report.textContent = `${action}回执（内存模拟） · PNG 源尺寸 ${width} × ${height} px · ${bytes.toLocaleString()} 字节` + (layers == null ? '' : ` · ${layers} 个可编辑标注`);
+        report.dataset.action = action;
+        report.dataset.width = String(width);
+        report.dataset.height = String(height);
+      }
+    });
+  </script>
+</body>
+</html>

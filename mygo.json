@@ -1,0 +1,11 @@
+{
+  "name": "ciip",
+  "slug": "ciip",
+  "identifier": "dev.ciip.app",
+  "version": "0.10.1",
+  "out": "build",
+  "icon": "resources/icon.png",
+  "macos": {
+    "icon": "resources/ciip.icns"
+  }
+}

@@ -1,0 +1,51 @@
+/* ciip's shared visual contract. Product styles and docs consume this file. */
+:root{
+  color-scheme:light;
+  --font-ui:-apple-system,BlinkMacSystemFont,"SF Pro Text","PingFang SC",sans-serif;
+  --text-xs:10px;--text-sm:11px;--text-base:12px;--text-title:17px;
+  --weight-medium:500;--weight-semibold:600;
+  --leading-ui:1.5;--leading-copy:1.65;
+  --ink:#292b2d;--text-secondary:#59685f;--muted:#6d7871;--text-tertiary:#87918a;
+  --accent:#cc582e;--accent-fill:#bf512b;--accent-hover:#b84b25;--accent-active:#a84321;--accent-soft:#f6e7e0;--on-accent:#fff;
+  --selection:#7c8b7f;--selection-strong:#596e60;--selection-soft:#e6ece7;
+  --success:#4f785d;--warning:#9a6d29;--danger:#b9513e;--danger-soft:#fff4f0;
+  --surface:rgba(255,255,255,.40);--surface-properties:rgba(255,255,255,.22);--surface-footer:rgba(255,255,255,.32);
+  --surface-app:#eef1ed;--surface-solid:#f5f8f4;--surface-control:rgba(255,255,255,.72);--surface-selected:rgba(255,255,255,.94);
+  --line:rgba(48,57,59,.12);--line-subtle:rgba(58,82,68,.075);--line-control:rgba(65,89,74,.16);
+  --control-hover:rgba(50,60,62,.07);--control-active:rgba(50,60,62,.12);--control-disabled-opacity:.35;
+  --selector-bg:rgba(65,76,74,.055);--selector-ink:#485c50;
+  --range-fill:#758b80;--range-track:rgba(79,100,90,.16);--range-thumb:#fafcfb;
+  --space-1:2px;--space-2:4px;--space-3:6px;--space-4:8px;--space-5:12px;--space-6:16px;--space-7:20px;--space-8:24px;
+  --radius:6px;--radius-control:7px;--radius-selector:8px;--radius-panel:12px;--radius-toolbar:13px;--radius-dialog:16px;--radius-round:50%;
+  --control-sm:26px;--control-md:28px;--control-lg:32px;--icon-sm:12px;--icon-md:16px;--icon-tool:17px;
+  --material-panel-bg:linear-gradient(155deg,rgba(252,253,251,.94),rgba(240,245,240,.97));
+  --material-dialog-bg:linear-gradient(145deg,rgba(251,253,249,.98),rgba(239,244,239,.97));
+  --material-toolbar-bg:linear-gradient(150deg,rgba(251,253,248,.88),rgba(235,242,235,.90));
+  --material-filter:blur(32px) saturate(1.12);
+  --material-toolbar-filter:blur(24px) saturate(1.1);
+  --material-border:rgba(255,255,255,.78);--material-outline:rgba(54,73,64,.14);
+  --shadow-panel:0 10px 32px rgba(29,40,36,.16),0 0 0 .5px var(--material-outline),inset 0 1px 0 rgba(255,255,255,.8);
+  --shadow-dialog:0 20px 70px rgba(23,43,36,.20),0 0 0 .5px var(--material-border);
+  --shadow-toolbar:0 5px 18px rgba(32,60,41,.125),inset 0 1px 0 var(--material-border),0 0 0 .5px var(--material-outline);
+  --shadow-control:0 1px 3px rgba(26,39,31,.13),0 0 0 .5px rgba(26,39,31,.06);
+  --scrim:rgba(28,41,34,.18);--scrim-filter:blur(3px);
+  --close-ink:#b86157;--close-hover:#ad493e;--close-active-bg:#f6e7e1;
+  --close-bg:rgba(249,251,246,.94);--close-border:rgba(255,255,255,.78);
+  --close-shadow:0 1px 5px rgba(38,60,41,.15),0 0 0 .5px rgba(82,105,87,.10);
+  --close-filter:blur(16px) saturate(1.12);
+  --pin-toolbar-bg:linear-gradient(145deg,#29312ee8,#202724ed);
+  --pin-toolbar-solid:#252e28;--pin-toolbar-ink:#f2f5f0;--pin-toolbar-muted:#edf3edc9;
+  --pin-toolbar-border:#ffffff26;--pin-toolbar-shadow:0 4px 16px #111c1730,inset 0 1px 0 #ffffff0b;
+  --pin-toolbar-filter:blur(20px) saturate(1.12);--pin-toolbar-hover:#ffffff12;--pin-toolbar-active:#ffffff20;
+  --pin-close-ink:#edaaa1;--pin-close-hover:#ffd0c8;--pin-close-hover-bg:#dc695c26;--pin-close-active-bg:#dc695c38;--pin-focus:#bfd0c2;
+  --motion-panel-in:170ms;--motion-panel-out:110ms;--motion-feedback:120ms;--motion-pin-toolbar:140ms;
+  --ease-panel:cubic-bezier(.16,1,.3,1);--ease-exit:cubic-bezier(.2,0,.2,1);--ease-pin-toolbar:cubic-bezier(.2,.8,.2,1);
+}
+@media(prefers-reduced-transparency:reduce){
+  :root{--surface:#f8faf6;--surface-properties:#f0f3ed;--surface-footer:#f8faf6;--surface-control:#f8faf6;--surface-selected:#fff;
+    --material-panel-bg:var(--surface-solid);--material-dialog-bg:var(--surface-solid);--material-toolbar-bg:var(--surface-solid);
+    --material-filter:none;--material-toolbar-filter:none;--close-bg:#f8faf5;--close-filter:none;
+    --pin-toolbar-bg:var(--pin-toolbar-solid);--pin-toolbar-filter:none;--scrim-filter:none;}
+}
+@media(prefers-reduced-motion:reduce){:root{--motion-panel-in:0ms;--motion-panel-out:0ms;--motion-feedback:0ms;--motion-pin-toolbar:0ms}}
+@media(prefers-contrast:more){:root{--muted:var(--text-secondary);--line:rgba(48,57,59,.28);--material-outline:rgba(54,73,64,.35);--line-control:rgba(65,89,74,.4)}}

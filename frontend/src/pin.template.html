@@ -1,0 +1,13 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>ciip 贴图</title>
+<style>
+{{TOKENS}}
+{{PIN_STYLE}}
+</style>
+<div id="surface"><img id="image" alt="贴图" tabindex="-1" draggable="false"><div class="controls" role="toolbar" aria-label="贴图工具栏">
+<div class="zoom-group" role="group" aria-label="缩放"><button id="minus" aria-label="缩小" title="缩小"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M5 10h10"/></svg></button><span id="scale" aria-label="图片缩放比例">…</span><button id="plus" aria-label="放大" title="放大"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M5 10h10M10 5v10"/></svg></button></div>
+<span class="divider" aria-hidden="true"></span><div class="action-group"><button id="edit" aria-label="重新编辑" title="重新编辑 (Enter)"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="m12.5 3.5 4 4M3 17l1-4L14 3l3 3L7 16z"/></svg><span class="control-label">编辑</span></button><button id="copy" aria-label="复制图片" title="复制 (⌘C)"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M7 7h10v10H7zM13 3H3v10"/></svg><span class="control-label">复制</span></button></div><span class="divider" aria-hidden="true"></span><button id="close" aria-label="关闭贴图" title="关闭 (Esc)"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="m6 6 8 8M14 6l-8 8"/></svg></button>
+</div><div class="hint">滚轮缩放 · 双击图片关闭</div></div><div id="message" role="status"></div>
+<script>
+{{PIN_SCRIPT}}
+CiipPin.startPin({{INITIAL}});
+</script></html>

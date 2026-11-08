@@ -1,0 +1,11 @@
+{
+  "name": "@ciip/frontend",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "typecheck": "tsc --noEmit",
+    "build": "tsc --noEmit && node ../scripts/build-frontend.mjs",
+    "preview": "vite preview --host 127.0.0.1"
+  }
+}
