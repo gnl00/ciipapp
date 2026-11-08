@@ -15,9 +15,11 @@ static BOOL reducedMotion;
 - (BOOL)ciip_testReduceMotion { return reducedMotion; }
 @end
 
-static void drain(NSTimeInterval seconds) {
-    NSDate *until = [NSDate dateWithTimeIntervalSinceNow:seconds];
-    while (until.timeIntervalSinceNow > 0) [[NSRunLoop currentRunLoop] runMode:NSDefaultRunLoopMode beforeDate:until];
+static BOOL waitUntil(BOOL (^condition)(void)) {
+    NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:5];
+    while (!condition() && deadline.timeIntervalSinceNow > 0)
+        [[NSRunLoop currentRunLoop] runMode:NSDefaultRunLoopMode beforeDate:deadline];
+    return condition();
 }
 static void frame(NSWindow *window, NSString *directory, NSString *name) {
     if (!directory) return;
@@ -35,9 +37,9 @@ static void frame(NSWindow *window, NSString *directory, NSString *name) {
     fprintf(stderr, "frame %s: window %.3f, pixel %.3f\n", name.UTF8String, window.alphaValue, [rep colorAtX:200 * scale y:100 * scale].alphaComponent);
     assert([[rep representationUsingType:NSBitmapImageFileTypePNG properties:@{}] writeToFile:[directory stringByAppendingPathComponent:name] atomically:YES]);
 }
-int main(int argc, const char **argv) {
+static void testPresentation(int argc, const char **argv) {
     @autoreleasepool {
-        [NSApplication sharedApplication]; assert(NSScreen.screens.count > 0);
+        assert(NSApp.running && NSScreen.screens.count > 0);
         Method preference = class_getInstanceMethod(NSWorkspace.class, @selector(accessibilityDisplayShouldReduceMotion));
         Method fixture = class_getInstanceMethod(NSWorkspace.class, @selector(ciip_testReduceMotion));
         method_exchangeImplementations(preference, fixture);
@@ -57,14 +59,16 @@ int main(int argc, const char **argv) {
         CGFloat start = window.alphaValue;
         frame(window, directory, @"quick-start.png");
         assert(start < .05);
-        drain(.035);
+        // AppKit's first animation tick is asynchronous. Observe actual progress
+        // after launch instead of assuming that it has arrived within 35ms.
+        BOOL progressed = waitUntil(^BOOL { return window.alphaValue > start; });
         CGFloat middle = window.alphaValue;
-        fprintf(stderr, "quick presentation alpha: start %.3f, middle %.3f\n", start, middle);
-        assert(middle > start && middle < 1);
+        fprintf(stderr, "quick presentation alpha: start %.3f, middle %.3f, running %d\n", start, middle, NSApp.running);
+        assert(progressed && middle > start && middle < 1);
         frame(window, directory, @"quick-middle.png");
         assert(NSEqualRects(window.frame, initial));
-        drain(duration + .06);
-        assert(window.alphaValue == 1 && NSEqualRects(window.frame, initial));
+        BOOL settled = waitUntil(^BOOL { return window.alphaValue == 1; });
+        assert(settled && window.alphaValue == 1 && NSEqualRects(window.frame, initial));
         frame(window, directory, @"quick-settled.png");
         reducedMotion = YES; window.alphaValue = 0;
         ciip_reveal_quick_window((uintptr_t)window, duration, .16, 1, .3, 1);
@@ -76,4 +80,27 @@ int main(int argc, const char **argv) {
         method_exchangeImplementations(preference, fixture);
         puts("PASS native quick presentation: intermediate alpha, stationary frame, settled image, reduced motion, zero duration");
     }
+}
+
+static int fixtureArgc;
+static const char **fixtureArgv;
+@interface CIIPQuickPresentationRunner : NSObject <NSApplicationDelegate>
+@end
+@implementation CIIPQuickPresentationRunner
+- (void)applicationDidFinishLaunching:(NSNotification *)notification {
+    [self performSelector:@selector(runFixture) withObject:nil afterDelay:0];
+}
+- (void)runFixture { testPresentation(fixtureArgc, fixtureArgv); exit(EXIT_SUCCESS); }
+@end
+
+int main(int argc, const char **argv) {
+    @autoreleasepool {
+        fixtureArgc = argc; fixtureArgv = argv;
+        [NSApplication sharedApplication]; [NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory];
+        CIIPQuickPresentationRunner *runner = [[CIIPQuickPresentationRunner alloc] init]; NSApp.delegate = runner;
+        [NSApp run];
+        [runner release];
+        fputs("AppKit exited before the quick presentation fixture completed\n", stderr);
+    }
+    return EXIT_FAILURE;
 }

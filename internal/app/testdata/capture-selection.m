@@ -153,34 +153,53 @@ static void renderDwellFrame(CALayer *layer, NSString *directory, NSString *name
 static void testCaptureAncestorVisual(NSString *directory) {
     Method mouseLocation = class_getClassMethod(NSEvent.class, @selector(mouseLocation));
     IMP originalMouseLocation = method_setImplementation(mouseLocation, (IMP)fixtureMouseLocation);
-    containerRect = CGRectMake(-530, -90, 760, 440); leafOrigin = CGPointMake(-370, 110); leafSize = CGSizeMake(430, 18);
-    fixtureWindows = @[windowInfo(1002, 12, containerRect, 1)]; fixtureMouse = NSMakePoint(-350, 885);
     hitGroup = hitContainer = rootChildrenAvailable = NO;
-    CIIPCapturePicker *picker = [[CIIPCapturePicker alloc] init]; picker.elementMode = YES; picker.desktopTop = 1000;
-    picker.selectionDuration = .12;
-    NSPanel *panel = [[CIIPCaptureSelectionPanel alloc] initWithContentRect:NSMakeRect(-550, 630, 800, 480) styleMask:NSWindowStyleMaskBorderless | NSWindowStyleMaskNonactivatingPanel backing:NSBackingStoreBuffered defer:NO];
+    CIIPCapturePicker *picker = [[CIIPCapturePicker alloc] init]; picker.elementMode = YES;
+    picker.desktopTop = NSMaxY(NSScreen.screens[0].frame); picker.selectionDuration = .12;
+    NSRect work = NSScreen.screens[0].visibleFrame;
+    NSRect frame = NSMakeRect(work.origin.x + 20, work.origin.y + 20, MIN(800, work.size.width - 40), MIN(480, work.size.height - 40));
+    NSPanel *panel = [[CIIPCaptureSelectionPanel alloc] initWithContentRect:frame styleMask:NSWindowStyleMaskBorderless | NSWindowStyleMaskNonactivatingPanel backing:NSBackingStoreBuffered defer:NO];
     panel.releasedWhenClosed = NO;
-    CIIPCaptureDwellView *view = [[[CIIPCaptureDwellView alloc] initWithFrame:NSMakeRect(0, 0, 800, 480)] autorelease]; view.picker = picker; panel.contentView = view;
+    CIIPCaptureDwellView *view = [[[CIIPCaptureDwellView alloc] initWithFrame:NSMakeRect(0, 0, frame.size.width, frame.size.height)] autorelease]; view.picker = picker; panel.contentView = view;
     view.layer.backgroundColor = [NSColor colorWithWhite:.96 alpha:1].CGColor; // Synthetic page; never read the desktop image.
     [picker.panels addObject:panel]; [panel orderFrontRegardless]; [panel display];
-    [picker sample]; drainUntil(^BOOL { return !picker.querying && !picker.pending; }); [CATransaction flush]; drainFor(.03);
+    // AppKit can constrain a requested frame on a smaller display. AX and pointer fixtures must
+    // follow the actual window, rather than assuming an off-screen frame or a 1000pt desktop.
+    frame = panel.frame;
+    containerRect = CGRectMake(frame.origin.x + 20, picker.desktopTop - NSMaxY(frame) + 20, frame.size.width - 40, frame.size.height - 40);
+    leafSize = CGSizeMake(MIN(430, floor(containerRect.size.width - 40)), 18);
+    leafOrigin = CGPointMake(floor(containerRect.origin.x + 20), floor(containerRect.origin.y + containerRect.size.height / 2));
+    fixtureWindows = @[windowInfo(1002, 12, containerRect, 1)];
+    fixtureMouse = NSMakePoint(leafOrigin.x + 20, picker.desktopTop - leafOrigin.y - 5);
+    [picker sample]; drainUntil(^BOOL { return !picker.querying && !picker.pending; }); [CATransaction flush];
     CAShapeLayer *outline = (CAShapeLayer *)view.layer.sublayers[1];
     CALayer *plate = view.layer.sublayers[2]; CATextLayer *dimensions = (CATextLayer *)plate.sublayers[0];
-    NSString *initialDimensions = [[[(NSAttributedString *)dimensions.string string] copy] autorelease];
+    assert(usableCaptureRect(CGPathGetBoundingBox(outline.path)));
+    assert(!plate.hidden);
+    drainUntil(^BOOL { return usableCaptureRect(CGPathGetBoundingBox([(CAShapeLayer *)outline.presentationLayer path])); });
+    NSString *expectedDimensions = [NSString stringWithFormat:@"%.0f × %.0f px", leafSize.width * panel.backingScaleFactor, leafSize.height * panel.backingScaleFactor];
+    assert([[(NSAttributedString *)dimensions.string string] isEqualToString:expectedDimensions]);
     renderDwellFrame(view.layer, directory, @"ancestor-line-start.png", panel.backingScaleFactor);
-    hitGroup = YES; fixtureMouse.y = 869; [picker sample]; drainUntil(^BOOL { return !picker.querying; });
+    hitGroup = YES; fixtureMouse.y = picker.desktopTop - leafOrigin.y - leafSize.height - 3;
+    [picker sample]; drainUntil(^BOOL { return !picker.querying; });
     [CATransaction flush]; drainFor(.033);
     renderDwellFrame(view.layer, directory, @"ancestor-gap-33ms.png", panel.backingScaleFactor);
     CGRect presented = CGPathGetBoundingBox([(CAShapeLayer *)outline.presentationLayer path]);
-    fprintf(stderr, "ancestor presentation gap height=%.2f label=%s\n", presented.size.height, [[(NSAttributedString *)dimensions.string string] UTF8String]);
-    assert(presented.size.height < 20 && !plate.hidden && [[(NSAttributedString *)dimensions.string string] isEqualToString:initialDimensions]);
-    drainFor(.017); hitGroup = NO; leafOrigin.y += 32; fixtureMouse.y = 853; [picker sample];
+    expectedDimensions = [NSString stringWithFormat:@"%.0f × %.0f px", leafSize.width * panel.backingScaleFactor, leafSize.height * panel.backingScaleFactor];
+    fprintf(stderr, "ancestor presentation gap frame=%s height=%.2f scale=%.0f hidden=%d label=%s\n", NSStringFromRect(frame).UTF8String, presented.size.height, panel.backingScaleFactor, plate.hidden, [[(NSAttributedString *)dimensions.string string] UTF8String]);
+    assert(usableCaptureRect(presented) && presented.size.height < 20);
+    assert(!plate.hidden);
+    assert([[(NSAttributedString *)dimensions.string string] isEqualToString:expectedDimensions]);
+    drainFor(.017); hitGroup = NO; leafOrigin.y += 32;
+    fixtureMouse.y = picker.desktopTop - leafOrigin.y - 5; [picker sample];
     drainUntil(^BOOL { return !picker.querying && !picker.pending; }); [CATransaction flush]; drainFor(.033);
     renderDwellFrame(view.layer, directory, @"ancestor-next-line-83ms.png", panel.backingScaleFactor);
-    assert(CGPathGetBoundingBox([(CAShapeLayer *)outline.presentationLayer path]).size.height < 20);
+    presented = CGPathGetBoundingBox([(CAShapeLayer *)outline.presentationLayer path]);
+    assert(usableCaptureRect(presented) && presented.size.height < 20);
     drainFor(.13);
     // The stability policy survives reduced motion; only the eventual transition becomes immediate.
-    view.forceReducedMotion = YES; hitGroup = YES; fixtureMouse.y = 837; [picker sample];
+    view.forceReducedMotion = YES; hitGroup = YES;
+    fixtureMouse.y = picker.desktopTop - leafOrigin.y - leafSize.height - 3; [picker sample];
     drainUntil(^BOOL { return !picker.querying; }); assert(picker.pending);
     assert(![outline animationForKey:@"path"] && CGPathGetBoundingBox(outline.path).size.height < 20);
     drainUntil(^BOOL { return !picker.pending && !picker.querying; });
