@@ -1,6 +1,6 @@
 # macOS 版本发布
 
-源码仓库：[gnl00/ciipapp](https://github.com/gnl00/ciipapp)。下载入口：[GitHub Releases](https://github.com/gnl00/ciipapp/releases)。官网使用 Releases 列表，后续发布无需再次部署官网来更新下载地址。
+源码仓库：[gnl00/ciipapp](https://github.com/gnl00/ciipapp)。下载入口：[GitHub Releases](https://github.com/gnl00/ciipapp/releases)。官网在构建时读取最新正式 Release 的实际架构 DMG 地址，写入静态 HTML；发布成功后自动触发官网重新构建，让下载按钮跟随最新正式版本。
 
 ## 准备版本
 
@@ -19,7 +19,7 @@ git tag -a v0.10.1 -m "ciip v0.10.1"
 git push origin v0.10.1
 ```
 
-GitHub 仓库需要启用 Actions，并允许发布 job 的 `GITHUB_TOKEN` 拥有 `contents: write`。构建 job 只具有读取权限，不需要个人访问令牌。
+GitHub 仓库需要启用 Actions，并允许发布 job 的 `GITHUB_TOKEN` 拥有 `contents: write`（发布资产）与 `actions: write`（触发官网构建）。这两项写权限仅授予 publish job，构建 job 只具有读取权限，不需要个人访问令牌。
 
 ## 双架构构建与产物
 
@@ -57,6 +57,22 @@ DMG 内有 `ciip.app` 和指向 Applications 的快捷方式；ZIP 是同一应�
 可从 Actions 的失败运行选择 **Re-run failed jobs**，或重跑所有 job。上传阶段失败后会保留草稿，重跑会覆盖草稿资产并继续。脚本通过有权限的分页 Releases 列表查询草稿；按 tag 查询的 REST endpoint 只返回已发布版本，不能用它验证草稿上传。已完整发布的同标签 Release 会保持原样，兼容不可变 Release；不会用重跑的构建替换已公开二进制。如果同标签已经手动公开了不完整的 Release，脚本会拒绝继续，需要先在 GitHub 检查并处理该 Release，或修复后发新版本。
 
 带 prerelease 部分的标签自动标记为预发布，绝不设为 Latest。正常版本只在不低于现有标准 SemVer Latest 时设为 Latest，避免重跑旧版本覆盖新版本入口。草稿不会被设为 Latest。
+
+## 发布后刷新官网
+
+`publish` job 在发布脚本成功退出后，使用同一个仓库的 `GITHUB_TOKEN` 执行：
+
+```sh
+gh workflow run pages.yml --repo "$GITHUB_REPOSITORY" --ref main
+```
+
+`pages.yml` 必须存在于主分支并保留 `workflow_dispatch` 入口。官网工作流在构建阶段通过 GitHub API 取得 `/releases/latest` 元数据，将 `ciip-v<版本>-macos-arm64.dmg` 和 `ciip-v<版本>-macos-x86_64.dmg` 的真实附件 URL 写入 HTML。访客直接点击架构按钮下载，无需在浏览器查询 GitHub API。预发布和旧版本重跑也只刷新当前 Latest 正式版的链接。
+
+这里采用显式 dispatch：使用 `GITHUB_TOKEN` 创建 Release 所产生的 `release` 事件不会自动触发其他工作流；`workflow_dispatch` 和 `repository_dispatch` 是允许产生后续运行的例外，见 [GitHub 工作流触发规则](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/trigger-a-workflow#triggering-a-workflow-from-a-workflow)。dispatch 所需的 `actions: write` 依据 [Workflow dispatch API 权限](https://docs.github.com/en/rest/actions/workflows#create-a-workflow-dispatch-event)。
+
+dispatch 命令成功只表示已提交官网构建，需要继续检查 Pages 工作流的部署结果。若 dispatch 失败，publish job 会失败，但已公开的完整 Release 保持公开；重跑失败 job 时，发布脚本保留已发布资产，再次提交官网构建即可。官网构建或部署失败时，也可以单独运行 `pages.yml` 修复链接，无需重新打应用标签或覆盖安装包。
+
+这一联动从包含该工作流修改的后续标签开始生效。已有 `v0.10.1` 无需移动标签；本次静态下载链接更新通过单独部署 Pages 完成。
 
 ## 维护依据与本地验证范围
 

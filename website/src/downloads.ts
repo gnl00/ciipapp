@@ -28,12 +28,8 @@ export function releaseDownloads(value:unknown,repository:string):ReleaseDownloa
   return arm64&&intel?{tag,arm64,x86_64:intel}:null;
 }
 
-export async function fetchLatestDownloads(repository:string,request:typeof fetch=fetch):Promise<ReleaseDownloads|null>{
-  const api=latestReleaseAPI(repository);if(!api)return null;
-  const controller=new AbortController(),timeout=setTimeout(()=>controller.abort(),6000);
-  try{
-    const response=await request(api,{headers:{Accept:'application/vnd.github+json'},signal:controller.signal});
-    return response.ok?releaseDownloads(await response.json(),repository):null;
-  }catch{return null;}
-  finally{clearTimeout(timeout);}
+export function applyReleaseDownloads(html:string,release:ReleaseDownloads):string {
+  return html.replace(/(data-download-arch="(arm64|x86_64)" href=")[^"]*"/g,
+    (_match,prefix:string,architecture:DownloadArchitecture)=>`${prefix}${release[architecture]}"`)
+    .replace(/(<span id="site-version">)[^<]*/,`$1${release.tag.slice(1)}`);
 }

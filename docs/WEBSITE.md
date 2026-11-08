@@ -27,6 +27,8 @@ npm run preview -w @ciip/website
 
 官网源码在website/src，静态资源在website/public，产物在website/dist。TypeScript与Vite为开发依赖，不需要服务端；页面主要内容在HTML中，无JavaScript也可阅读。演示操作只改变本页示意画面，不读取屏幕或真实剪贴板。
 
+开发服务器与生产构建均使用GitHub CLI（`gh`）读取最新正式Release。本机需安装并登录gh；Actions使用构建步骤中的GH_TOKEN。查询失败或缺少任一架构DMG时构建失败，保留上一份线上网站，不发布不完整的下载入口。
+
 ## GitHub部署
 
 1. 把项目代码上传到[gnl00/ciipapp](https://github.com/gnl00/ciipapp)，使用main分支。
@@ -47,11 +49,13 @@ npm run preview -w @ciip/website
 | VITE_REPOSITORY_URL | 源码URL，Pages从实际仓库注入；本地默认实际仓库地址 |
 | VITE_RELEASE_URL | 最新版本说明与异常回退地址，默认实际仓库的/releases/latest；可选HTTPS覆盖 |
 
-下载区提供Apple芯片（arm64）和Intel芯片（x86_64）两个DMG下载按钮。页面向GitHub公开API请求一次最新正式Release元数据，从其assets中按实际tag与架构匹配安装包；后续发版无需重新部署官网。按钮链接使用GitHub返回的真实附件地址，并核对仓库、tag和文件名，不写死某一版本。查询期间点击会等待同一次请求完成；请求失败、超时或禁用JavaScript时回到[最新版本页](https://github.com/gnl00/ciipapp/releases/latest)。元数据请求不使用认证信息，仍受GitHub公开API的可用性及访问额度限制。
+下载区提供Apple芯片（arm64）和Intel芯片（x86_64）两个DMG下载按钮。Vite在构建阶段从最新正式Release的assets中按实际tag与架构匹配安装包，核对仓库、tag和文件名，再把真实附件URL写入静态HTML。访客点击直接下载，不需要浏览器请求GitHub API，禁用JavaScript也可以下载。页面另有[最新版本与更新说明](https://github.com/gnl00/ciipapp/releases/latest)入口。
 
 版本发布由[release.yml](../.github/workflows/release.yml)处理：推送`v0.10.1`这类版本tag，Actions分别在Apple芯片和Intel原生runner构建arm64与x86_64包；两种架构全部成功并验证产物后才公开Release。每种架构提供DMG与ZIP，并附SHA256校验清单。版本同步、tag命令、签名和失败重跑说明见[RELEASING.md](RELEASING.md)。两种芯片的下载安装与系统功能仍需分别做实机验收。
 
 不必设置Actions变量`CIIP_RELEASE_URL`。默认`/releases/latest`会跟随后续正式版本。只有改用其他公开版本说明或回退入口时才设置该HTTPS变量，再重新部署Pages。实际DMG地址仍从源码仓库的最新Release解析。`website/.env.example`提供本地覆盖示例。
+
+应用发布成功后，Release工作流会显式dispatch Pages工作流，重新生成最新架构下载链接和页脚版本。这个触发步骤从包含该改动的后续应用标签生效；现有v0.10.1的官网通过main分支部署更新，无需移动标签。手动修改GitHub Latest或附件时，可手动运行Pages工作流刷新网站。
 
 后续若绑定自定义域名，在Pages中配置域名与DNS，并将Actions变量PAGES_BASE_PATH设为`/`。
 

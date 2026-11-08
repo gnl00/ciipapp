@@ -6,4 +6,4 @@
 
 交互：主要记忆点是截图在原位置变成可缩放贴图。状态由用户点击推进，按钮即时反馈；进入贴图阶段仅高亮贴图按钮，图片上的标注保留。没有滚动入场或自动播放。低动态偏好关闭变换过渡，键盘操作保留焦点和按钮可达性。SVG风景与桌面是原创交互示意，不冒充真实系统截图。
 
-官网采用纯静态 HTML、CSS 与 TypeScript，Vite构建；主要说明不依赖JavaScript。源码和发布入口默认指向 `gnl00/ciipapp` 与其最新正式Release，可由 `VITE_REPOSITORY_URL` 与 `VITE_RELEASE_URL` 覆盖。下载区以两个同等层级的橙色按钮区分Apple芯片和Intel芯片，按钮内显示架构与DMG格式；读取最新正式Release的真实附件地址，点击直接下载。更新说明和源码作为次级文字链接，具体安装说明留在发布页；请求失败时回到最新Release页面。`VITE_BASE_PATH` 支持 GitHub Pages 项目目录。
+官网采用纯静态 HTML、CSS 与 TypeScript，Vite构建；主要说明和架构下载均不依赖JavaScript。源码和发布入口默认指向 `gnl00/ciipapp` 与其最新正式Release，可由 `VITE_REPOSITORY_URL` 与 `VITE_RELEASE_URL` 覆盖。下载区以两个同等层级的橙色按钮区分Apple芯片和Intel芯片，按钮内显示架构与DMG格式；构建阶段将最新正式Release的真实附件地址写入HTML，点击直接下载。更新说明和源码作为次级文字链接，具体安装说明留在发布页。应用发布后自动刷新官网，访客无需请求GitHub API。`VITE_BASE_PATH` 支持 GitHub Pages 项目目录。

@@ -35,6 +35,8 @@ Apple Vision 使用系统内置引擎；选择 Tesseract 时需在本机安装 T
 
 需要 macOS 原生构建环境、Node.js 24 与 Go 1.27.3。MyGo 版本由 `go.mod` 固定。
 
+官网开发与构建还需要可用的 GitHub CLI（`gh`），用于读取最新正式 Release 的安装包地址；本机可通过 `gh auth login` 登录，GitHub Actions 使用工作流令牌。
+
 ```sh
 npm ci
 npm run dev:app       # 应用前端，原生功能需桌面进程提供
