@@ -39,7 +39,7 @@ func TestNativeQuickPresentation(t *testing.T) {
 	}
 	if out, err := exec.Command(binary, args...).CombinedOutput(); err != nil {
 		t.Fatalf("native quick presentation regression: %v\n%s", err, out)
-	} else if !strings.Contains(string(out), "PASS native quick presentation: intermediate alpha, stationary frame, settled image, reduced motion, zero duration") {
+	} else if !strings.Contains(string(out), "PASS native quick presentation: animation request, stationary frame, settled image, reduced motion, zero duration") {
 		t.Fatalf("native quick presentation exited without completing its assertions:\n%s", out)
 	}
 }

@@ -5,6 +5,7 @@
 #include <assert.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include <math.h>
 void ciip_reveal_quick_window(uintptr_t, double, double, double, double, double);
 
 static BOOL reducedMotion;
@@ -15,13 +16,24 @@ static BOOL reducedMotion;
 - (BOOL)ciip_testReduceMotion { return reducedMotion; }
 @end
 
-// Record presentation updates when AppKit applies them. A busy run-loop turn can
-// contain the entire animation, so polling after that turn misses valid frames.
+// Record any intermediate updates AppKit delivers, alongside the requested motion.
+// Virtual displays may deliver only the endpoints of a short animation.
 @interface CIIPQuickPresentationPanel : NSPanel
 @property(nonatomic) CGFloat intermediateAlpha;
 @property(nonatomic) BOOL observeAlpha;
+@property(nonatomic) BOOL animationRequested;
+@property(nonatomic) NSTimeInterval requestedDuration;
+@property(nonatomic, retain) CAMediaTimingFunction *requestedTiming;
+
 @end
 @implementation CIIPQuickPresentationPanel
+- (id)animator {
+    self.animationRequested = YES;
+    self.requestedDuration = NSAnimationContext.currentContext.duration;
+    self.requestedTiming = NSAnimationContext.currentContext.timingFunction;
+    return [super animator];
+}
+- (void)dealloc { [_requestedTiming release]; [super dealloc]; }
 - (void)setAlphaValue:(CGFloat)alpha {
     [super setAlphaValue:alpha];
     CGFloat presented = self.alphaValue;
@@ -80,19 +92,31 @@ static void testPresentation(int argc, const char **argv) {
         BOOL settled = waitUntil(^BOOL { return window.alphaValue == 1; });
         CGFloat middle = window.intermediateAlpha;
         fprintf(stderr, "quick presentation alpha: start %.3f, recorded middle %.3f, settled %.3f\n", start, middle, window.alphaValue);
-        assert(middle > start && middle < 1);
+        // AppKit may coalesce every intermediate update on a loaded/virtual display.
+        // Verify the animation request independently of how many frames it delivers.
+        assert(window.animationRequested && fabs(window.requestedDuration - duration) < .000001);
+        assert(window.requestedTiming);
+        float first[2], second[2];
+        [window.requestedTiming getControlPointAtIndex:1 values:first];
+        [window.requestedTiming getControlPointAtIndex:2 values:second];
+        assert(fabs(first[0] - (argc > 2 ? atof(argv[2]) : .16)) < .000001);
+        assert(fabs(first[1] - (argc > 3 ? atof(argv[3]) : 1)) < .000001);
+        assert(fabs(second[0] - (argc > 4 ? atof(argv[4]) : .3)) < .000001);
+        assert(fabs(second[1] - (argc > 5 ? atof(argv[5]) : 1)) < .000001);
+        assert(middle == 0 || (middle > start && middle < 1));
         assert(settled && window.alphaValue == 1 && NSEqualRects(window.frame, initial));
         window.observeAlpha = NO;
         frame(window, directory, @"quick-settled.png");
+        window.animationRequested = NO;
         reducedMotion = YES; window.alphaValue = 0;
         ciip_reveal_quick_window((uintptr_t)window, duration, .16, 1, .3, 1);
-        assert(window.alphaValue == 1);
+        assert(window.alphaValue == 1 && !window.animationRequested);
         reducedMotion = NO; window.alphaValue = 0;
         ciip_reveal_quick_window((uintptr_t)window, 0, .16, 1, .3, 1);
-        assert(window.alphaValue == 1);
+        assert(window.alphaValue == 1 && !window.animationRequested);
         [window close]; [window release];
         method_exchangeImplementations(preference, fixture);
-        puts("PASS native quick presentation: intermediate alpha, stationary frame, settled image, reduced motion, zero duration");
+        puts("PASS native quick presentation: animation request, stationary frame, settled image, reduced motion, zero duration");
     }
 }
 
