@@ -51,6 +51,7 @@ test('a cancelled transfer cannot replace the previous document after image deco
   let finishRead;
   const previous={name:'unsaved screenshot'},next={base:'fixture',width:800,height:500,name:'incoming screenshot'};
   const context=vm.createContext({loadSequence:0,doc:previous,source:null,native:false,pinID:'',ocrGeneration:0,quickEditor:null,
+    editorStyles:{refresh:async()=>{}},
     readImage:()=>new Promise(resolve=>{finishRead=resolve;}),finishText(){},setTool(){},fit(){},History:class{},$:()=>({})});
   vm.runInContext(loadSource,context);
   const controller=new AbortController();
@@ -61,4 +62,21 @@ test('a cancelled transfer cannot replace the previous document after image deco
   const accepted=context.setDocument(next);
   finishRead({naturalWidth:800,naturalHeight:500});await accepted;
   assert.equal(context.doc,next);
+});
+
+test('new screenshots read tool defaults after image delivery and recheck cancellation after that read',async()=>{
+  let readStyle,entered,reads=0;
+  let reading=new Promise(resolve=>{entered=resolve;});
+  const previous={name:'previous'},next={base:'fixture',width:800,height:500,name:'next'};
+  const context=vm.createContext({loadSequence:0,doc:previous,source:null,native:false,pinID:'',ocrGeneration:0,quickEditor:null,
+    readImage:async()=>({naturalWidth:800,naturalHeight:500}),editorStyles:{refresh:()=>{reads++;entered();return new Promise(resolve=>{readStyle=resolve;});}},
+    finishText(){},setTool(){},fit(){},History:class{},$:()=>({})});
+  vm.runInContext(loadSource,context);
+  const controller=new AbortController(),loading=context.setDocument(next,'','next',controller.signal);
+  await reading;assert.equal(reads,1);assert.equal(context.doc,previous);
+  controller.abort();readStyle();await assert.rejects(loading,{name:'AbortError'});
+  assert.equal(context.doc,previous);
+  reading=new Promise(resolve=>{entered=resolve;});
+  const accepted=context.setDocument(next);await reading;assert.equal(reads,2);
+  readStyle();await accepted;assert.equal(context.doc,next);
 });

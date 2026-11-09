@@ -44,6 +44,18 @@ test('update preview identifies its simulation and keeps external navigation nat
   await assert.rejects(call('CaptureService.OpenUpdatePage'), /原生应用/);
 });
 
+test('tool style patches survive quick/full preview replacement without changing general preferences',async()=>{
+  const parent={},first=createBridge(parent);
+  await first.call('CaptureService.SetEditorStyle',{penStroke:8});
+  const second=createBridge(parent);
+  assert.equal((await second.call('CaptureService.GetEditorStyle')).penStroke,8);
+  await second.call('CaptureService.SetEditorStyle',{textSize:36});
+  const third=createBridge(parent);
+  assert.equal((await third.call('CaptureService.GetEditorStyle')).penStroke,8);
+  assert.equal((await third.call('CaptureService.GetEditorStyle')).textSize,36);
+  assert.equal((await third.call('CaptureService.GetPreferences')).captureMode,'quick');
+});
+
 test('copy and save receipts report PNG source dimensions rather than viewport dimensions', async () => {
   const {call, messages} = createBridge();
   await call('CaptureService.CopyImage', pngHeader(6000, 4000));

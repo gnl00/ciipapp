@@ -80,14 +80,17 @@ func readPreferences(path string) (Preferences, error) {
 	return p, nil
 }
 func savePreferences(path string, p Preferences) error {
-	raw, err := json.MarshalIndent(p, "", "  ")
+	return saveJSON(path, p)
+}
+func saveJSON(path string, value any) error {
+	raw, err := json.MarshalIndent(value, "", "  ")
 	if err != nil {
 		return err
 	}
 	if err = os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		return err
 	}
-	f, err := os.CreateTemp(filepath.Dir(path), ".preferences-")
+	f, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+"-")
 	if err != nil {
 		return err
 	}
@@ -103,6 +106,7 @@ func savePreferences(path string, p Preferences) error {
 }
 func (s *CaptureService) initializePreferences() error {
 	s.preferences = defaultPreferences()
+	s.editorStyle = defaultEditorStyle()
 	dir, err := os.UserConfigDir()
 	if err != nil {
 		return err
@@ -113,7 +117,7 @@ func (s *CaptureService) initializePreferences() error {
 	}
 	s.preferencesPath = filepath.Join(dir, id, "preferences.json")
 	s.preferences, err = readPreferences(s.preferencesPath)
-	return err
+	return errors.Join(err, s.initializeEditorStyle(filepath.Dir(s.preferencesPath)))
 }
 func (s *CaptureService) GetPreferences() Preferences {
 	s.preferencesMu.Lock()

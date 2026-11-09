@@ -35,6 +35,7 @@ type ImageData struct {
 
 type CaptureService struct {
 	settingsState
+	editorStyleState
 	quickState
 	editor      *mygo.Window
 	captureMu   sync.Mutex

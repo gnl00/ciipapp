@@ -1,4 +1,5 @@
 import type {Rect,CaptureImage,ScreenRect,QuickPlacement} from './types.ts';
+import type {EditorStyle} from './editor-style.ts';
 export type {CaptureImage,ScreenRect,QuickPlacement} from './types.ts';
 
 export type ShortcutAction = 'area' | 'window' | 'element' | 'screen' | 'pin';
@@ -16,6 +17,7 @@ export interface AppInfo {version:string;platform:string;architecture:string;scr
 export interface Status {shortcuts:ShortcutStatus;version:string;captureMode:'quick'|'editor'}
 export interface UpdateResult {status:'available'|'up_to_date'|'unavailable';currentVersion:string;latestVersion:string;url:string;message:string}
 export interface NativeResponses {
+ GetEditorStyle:EditorStyle;SetEditorStyle:EditorStyle;
  GetPreferences:Preferences;SetPreferences:Preferences;GetAppInfo:AppInfo;GetShortcutStatus:ShortcutStatus;
  GetStatus:Status;BeginShortcutRecording:ShortcutStatus;EndShortcutRecording:ShortcutStatus;
  CheckForUpdates:UpdateResult;OpenUpdatePage:void;GetQuickCapture:QuickCapture;GetQuickBounds:ScreenRect;TransformQuickWindow:ScreenRect;

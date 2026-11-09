@@ -9,8 +9,9 @@ import {createQuickWindowGesture} from '../src/quick-window.ts';
 
 const source=readTypeScript(process.env.CIIP_QUICK_SOURCE||new URL('../src/quick.ts',import.meta.url))
  .replace(/^import .*;\n/gm,'').replace(/^export const isQuickMode=.*;$/m,'const isQuickMode=true;').replace('export function createQuickEditor','function createQuickEditor');
-function fixture(image={dataURL:'fixture',width:1280,height:720},placement={panel:{width:664,height:500},image:{x:12,y:28,width:640,height:360},scale:.5,original:true},manualFrames=false) {
- const listeners={},nodes=[],calls=[],observers=[],frames=[];
+function fixture(image={dataURL:'fixture',width:1280,height:720},placement={panel:{width:664,height:500},image:{x:12,y:28,width:640,height:360},scale:.5,original:true},manualFrames=false,hooks={}) {
+ const listeners={},nodes=[],calls=[],observers=[],frames=[],notifications=[];
+ let finishes=0,serializations=0;
  const node=()=>{const n={dataset:{},attributes:{},hasPointerCapture(){return false;},setPointerCapture(){},releasePointerCapture(){},style:{setProperty(key,value){this[key]=value;}},events:{},children:[],hidden:true,clientWidth:640,scrollWidth:640,scrollLeft:0,offsetWidth:640,offsetHeight:84,classList:{add(){},remove(){},toggle(){}},setAttribute(key,value){this.attributes[key]=value;},before(){},append(...children){this.children.push(...children);for(const child of children)child.parentElement=this;},addEventListener(type,fn){this.events[type]=fn;},removeEventListener(type){delete this.events[type];},querySelector(){return {remove(){}};},getBoundingClientRect(){return {left:0,right:this.clientWidth};},click(event={detail:1}){if(!this.disabled)return this.onclick?.(event);}};nodes.push(n);return n;};
  const toolbar=node(),properties=node(),copy=node(),wrap=node(),busy=node(),canvas=node(),tools=node();
  let toolsWidth=640;
@@ -26,10 +27,53 @@ function fixture(image={dataURL:'fixture',width:1280,height:720},placement={pane
  const observer=class{constructor(callback){this.callback=callback;observers.push(this);}observe(){}disconnect(){this.disconnected=true;}};
  const context=vm.createContext({errorMessage,document,ResizeObserver:observer,MutationObserver:observer,matchMedia:()=>({matches:false}),innerWidth:664,innerHeight:500,window:{addEventListener:(type,fn)=>listeners[type]=fn},requestAnimationFrame:fn=>manualFrames?frames.push(fn):setImmediate(fn),setTimeout,clearTimeout,createQuickWindowGesture:options=>createQuickWindowGesture({...options,requestFrame:fn=>setImmediate(fn),cancelFrame:clearImmediate}),quickCanvasRect,fitQuickImage});
  vm.runInContext(source,context);
- const editor=context.createQuickEditor({call:async(method,...args)=>{calls.push({method,args});if(method==='GetQuickCapture')return {image,placement,doubleClickMS:800};if(method==='QuickReady')focused=toolbar;if(method==='GetQuickBounds')return {x:100,y:100,width:664,height:500};},loadCapture:async()=>{},finishEditing(){},serialize:()=>'{"base":"fixture"}',notify(){},canCloseCanvas:()=>closable});
- return {editor,calls,listeners,wrap,busy,canvas,toolbar,tools,observers,toolButtons,body:document.body,nodes,frame(){frames.splice(0).forEach(fn=>fn());},get focused(){return focused;},get labelRemoved(){return labelRemoved;},set modal(value){modal=value;},set closable(value){closable=value;},resizeTools(width){toolsWidth=width;if(tools.parentElement)tools.parentElement.clientWidth=width;observers.forEach(observer=>observer.callback([]));},selectTool(index){toolButtons.forEach((button,i)=>button.attributes['aria-pressed']=String(i===index));observers.forEach(observer=>observer.callback([]));},resize(width,height){context.innerWidth=width;context.innerHeight=height;listeners.resize();}};
+ const editor=context.createQuickEditor({call:async(method,...args)=>{calls.push({method,args});if(method===hooks.failMethod)throw Error('native operation failed');if(method==='GetQuickCapture')return {image,placement,doubleClickMS:800};if(method==='QuickReady')focused=toolbar;if(method==='GetQuickBounds')return {x:100,y:100,width:664,height:500};},loadCapture:async()=>{},finishEditing(){finishes++;return hooks.finishEditing?.();},serialize:()=>{serializations++;return '{"base":"fixture"}';},notify:(message,error)=>notifications.push({message,error}),canCloseCanvas:()=>closable});
+ return {editor,calls,listeners,wrap,busy,canvas,toolbar,tools,observers,toolButtons,notifications,body:document.body,nodes,frame(){frames.splice(0).forEach(fn=>fn());},get finishes(){return finishes;},get serializations(){return serializations;},get focused(){return focused;},get labelRemoved(){return labelRemoved;},set modal(value){modal=value;},set closable(value){closable=value;},resizeTools(width){toolsWidth=width;if(tools.parentElement)tools.parentElement.clientWidth=width;observers.forEach(observer=>observer.callback([]));},selectTool(index){toolButtons.forEach((button,i)=>button.attributes['aria-pressed']=String(i===index));observers.forEach(observer=>observer.callback([]));},resize(width,height){context.innerWidth=width;context.innerHeight=height;listeners.resize();}};
 }
 const baseLayout={crop:{x:0,y:0},offsetX:0,offsetY:0,width:1280,height:720};
+const settle=()=>new Promise(setImmediate);
+const exits={
+ finish:h=>h.editor.finish(),
+ close:h=>h.nodes.find(node=>node.className==='quick-close').click(),
+ doubleClick:h=>h.canvas.events.dblclick({preventDefault(){}}),
+ doublePress:h=>{for(const timeStamp of [100,750])h.editor.moveCanvas({button:0,pointerId:1,currentTarget:h.canvas,timeStamp,screenX:400,screenY:300,preventDefault(){},stopPropagation(){}});},
+ transfer:h=>h.nodes.find(node=>node.className==='quick-full').click(),
+};
+
+for(const [name,exit]of Object.entries(exits))test(`${name} waits for editing persistence before closing or transferring once`,async()=>{
+ let release;const saved=new Promise(resolve=>{release=resolve;}),h=fixture(undefined,undefined,false,{finishEditing:()=>saved});await h.editor.start();
+ exit(h);await settle();exit(h);
+ assert.equal(h.finishes,1);assert.equal(h.serializations,0);
+ assert.equal(h.calls.filter(call=>['CloseQuick','OpenQuickInEditor'].includes(call.method)).length,0);
+ release();await settle();
+ const calls=h.calls.filter(call=>['CloseQuick','OpenQuickInEditor'].includes(call.method));
+ assert.equal(calls.length,1);assert.equal(calls[0].method,name==='transfer'?'OpenQuickInEditor':'CloseQuick');
+ assert.equal(h.serializations,name==='transfer'?1:0);
+});
+
+for(const name of ['finish','transfer'])test(`${name} keeps the document open on persistence failure and permits retry`,async()=>{
+ let failing=true;const h=fixture(undefined,undefined,false,{finishEditing:()=>{if(failing)throw Error('styles could not be saved');}});await h.editor.start();
+ await exits[name](h);
+ assert.equal(h.calls.filter(call=>['CloseQuick','OpenQuickInEditor'].includes(call.method)).length,0);
+ assert.equal(h.serializations,0);assert.match(h.notifications[0].message,/styles could not be saved/);assert.equal(h.notifications[0].error,true);
+ failing=false;await exits[name](h);
+ assert.equal(h.finishes,2);assert.equal(h.calls.filter(call=>call.method===(name==='transfer'?'OpenQuickInEditor':'CloseQuick')).length,1);
+});
+
+test('a failed native close releases the ending state after persistence and cancels pending window movement',async()=>{
+ const hooks={failMethod:'CloseQuick'},h=fixture(undefined,undefined,false,hooks);await h.editor.start();
+ h.editor.moveCanvas({button:0,pointerId:1,currentTarget:h.canvas,timeStamp:100,screenX:400,screenY:300,preventDefault(){},stopPropagation(){}});
+ await h.editor.finish();await settle();
+ assert.equal(h.calls.filter(call=>call.method==='TransformQuickWindow').length,0);assert.match(h.notifications[0].message,/native operation failed/);
+ hooks.failMethod='';await h.editor.finish();assert.equal(h.finishes,2);assert.equal(h.calls.filter(call=>call.method==='CloseQuick').length,2);
+});
+
+test('a failed native transfer permits a fresh save and transfer attempt',async()=>{
+ const hooks={failMethod:'OpenQuickInEditor'},h=fixture(undefined,undefined,false,hooks);await h.editor.start();
+ await exits.transfer(h);assert.match(h.notifications[0].message,/native operation failed/);
+ hooks.failMethod='';await exits.transfer(h);
+ assert.equal(h.finishes,2);assert.equal(h.calls.filter(call=>call.method==='OpenQuickInEditor').length,2);
+});
 
 test('quick startup restores canvas focus after native activation instead of leaving the first tool focused',async()=>{
  const h=fixture();await h.editor.start();assert.equal(h.focused,h.canvas);
@@ -90,8 +134,10 @@ test('quick editor preserves initial metadata placement then refits when its nat
 test('native menu uses the same transfer action and prevents duplicate requests',async()=>{
  const h=fixture();await h.editor.start();
  h.listeners['ciip:quick-open-editor']();h.listeners['ciip:quick-open-editor']();
+ await settle();
  assert.equal(h.calls.filter(call=>call.method==='OpenQuickInEditor').length,1);
  h.listeners['ciip:quick-transfer-cancelled']();h.listeners['ciip:quick-open-editor']();
+ await settle();
  assert.equal(h.calls.filter(call=>call.method==='OpenQuickInEditor').length,2);
 });
 
@@ -101,6 +147,7 @@ test('native menu cannot transfer a document behind an open modal or during expo
  h.modal=false;h.busy.hidden=false;h.listeners['ciip:quick-open-editor']();
  assert.equal(h.calls.filter(call=>call.method==='OpenQuickInEditor').length,0);
  h.busy.hidden=true;h.listeners['ciip:quick-open-editor']();
+ await settle();
  assert.equal(h.calls.filter(call=>call.method==='OpenQuickInEditor').length,1);
 });
 
@@ -114,10 +161,10 @@ test('blank canvas captures a window move and sends global endpoint deltas',asyn
  assert.equal(h.calls.filter(call=>call.method==='CloseQuick').length,0);
 });
 
-test('double click uses the system interval and closes before the second native title-bar action',async()=>{
+test('double click uses the system interval and blocks the second native title-bar action while finishing',async()=>{
  const h=fixture();await h.editor.start();let prevented=0;
  for(const timeStamp of [100,750])h.editor.moveCanvas({button:0,pointerId:1,currentTarget:h.canvas,timeStamp,screenX:400,screenY:300,preventDefault(){prevented++;},stopPropagation(){}});
- assert.equal(prevented,2);assert.equal(h.calls.filter(call=>call.method==='CloseQuick').length,1);
+ assert.equal(prevented,2);await settle();assert.equal(h.calls.filter(call=>call.method==='CloseQuick').length,1);
 });
 
 test('a second click after moving the window cannot close the editor',async()=>{
@@ -134,6 +181,7 @@ test('copy is icon only and close sits inside the screenshot top-right outside t
  h.closable=false;h.canvas.events.dblclick({preventDefault(){assert.fail('annotation text must keep double-click editing');}});
  assert.equal(h.calls.filter(call=>call.method==='CloseQuick').length,0);
  h.closable=true;h.canvas.events.dblclick({preventDefault(){}});
+ await settle();
  assert.equal(h.calls.filter(call=>call.method==='CloseQuick').length,1);
 });
 

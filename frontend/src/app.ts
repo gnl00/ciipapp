@@ -19,6 +19,8 @@ import {createQuickEditor, isQuickMode} from './quick.ts';
 import {createPopover, animatePanel} from './popover.ts';
 import {randomBackgroundVariant} from './effects.ts';
 import {initializeSettings} from './settings.ts';
+import {createEditorStyleStore,normalizeEditorStyle} from './editor-style.ts';
+import type {EditorStyle} from './editor-style.ts';
 
 interface AppElements {
  'capture':HTMLButtonElement;
@@ -147,6 +149,15 @@ let replacingDocument = false;
 const canvas = $('canvas'), ctx = canvas.getContext('2d')!;
 const selectionLayer = $('selection-layer');
 const native = !!window.mygo?.call;
+const editorStyles=createEditorStyleStore({
+ read:async()=>native?call('GetEditorStyle'):JSON.parse(localStorage.getItem('ciip.editorStyle')||'{}'),
+ write:async patch=>{
+  if(native)return call('SetEditorStyle',patch);
+  const next=normalizeEditorStyle({...JSON.parse(localStorage.getItem('ciip.editorStyle')||'{}'),...patch});
+  localStorage.setItem('ciip.editorStyle',JSON.stringify(next));return next;
+ },
+ onError:error=>notify('工具样式保存或读取失败：'+errorMessage(error),true),
+});
 let quickEditor:ReturnType<typeof createQuickEditor>=null;
 const capturePopup=createPopover($('capture-menu-toggle'),$('capture-menu'));
 const appearancePopup=createPopover($('appearance-toggle'),$('appearance-panel'));
@@ -232,6 +243,9 @@ async function setDocument(next:CiipDocument, nextPin = '', message = '图片已
   signal?.throwIfAborted();
   if (request !== loadSequence) return;
   if (image.naturalWidth !== next.width || image.naturalHeight !== next.height) throw new Error('图片尺寸与编辑数据不一致');
+  await editorStyles.refresh();
+  signal?.throwIfAborted();
+  if (request !== loadSequence) return;
   if (native && pinID && pinID !== nextPin) await call('RestorePin',pinID);
   if (native && nextPin) await call('HidePin',nextPin);
   signal?.throwIfAborted();
@@ -256,6 +270,7 @@ async function capture(mode = 'area') {
   const preferences=native?await call('GetPreferences'):null;
   if (preferences?.captureMode!=='quick'&&!await confirmReplace()) return;
   await run('等待截图…', async () => {
+    await editorStyles.flush();
     const data = await call('Capture',mode);
     if (data) { await loadCapture(data); notify('已复制到剪贴板'); }
   });
@@ -377,14 +392,29 @@ function setTool(next:Tool) {
   finishText();
   finishGesture();
   const previous=tool;
-  if(tool==='pen')penStroke=stroke;if(tool==='highlighter')highlightStroke=stroke;
-  if(next==='pen')stroke=penStroke;if(next==='highlighter'){stroke=highlightStroke;if(color===palette[0])color=palette[1];}
+  restoreEditorStyle(next);
   tool=next; selected=null; preview=null; gesture=null;
   if (tool==='crop') cropRect=doc?.crop ? {...doc!.crop} : null;
   else cropRect=null;
   if ((previous==='crop'||tool==='crop') && doc) fit(); else render();
   if(next==='ocr'&&doc)void recognizeText();
 
+}
+function restoreEditorStyle(next:Tool) {
+  const style=editorStyles.snapshot();
+  ({color,penStroke,highlightStroke,arrowStyle,numberStyle,numberRadius,redactStyle,redactStrength,textSize}=style);
+  stroke=next==='pen'?penStroke:next==='highlighter'?highlightStroke:style.stroke;
+  if(next==='highlighter')color=style.highlightColor;
+}
+function rememberColor() {
+  const kind=doc?.annotations.find(a=>a.id===selected)?.type||tool;
+  editorStyles.update(kind==='highlighter'?{highlightColor:color}:{color});
+}
+function rememberStroke() {
+  const kind=doc?.annotations.find(a=>a.id===selected)?.type||tool;
+  const patch:Partial<EditorStyle>=kind==='pen'?{penStroke:stroke}:kind==='highlighter'?{highlightStroke:stroke}:{stroke};
+  if(kind==='pen')penStroke=stroke;if(kind==='highlighter')highlightStroke=stroke;
+  editorStyles.update(patch);
 }
 function changed() { ocrKey=''; history!.push(doc!); dirty=true; $('status').textContent=pinID?'已编辑 · 贴图尚未更新':'已编辑 · ⌘C 复制当前结果'; render(); }
 function undo(redo=false) {
@@ -716,19 +746,19 @@ $('capture').onclick=()=>capture(); $('start-capture').onclick=()=>capture();
 document.querySelectorAll<HTMLButtonElement>('[data-capture]').forEach(button=>button.onclick=()=>capture(button.dataset.capture));
 $('open').onclick=openImage; $('start-open').onclick=openImage;
 $('tools').onclick=event=>{ const button=(event.target as Element).closest<HTMLButtonElement>('[data-tool]'); if(button)setTool(button.dataset.tool as Tool); };
-$('colors').onclick=event=>{ const button=(event.target as Element).closest<HTMLButtonElement>('[data-color]'); if(button){color=button.dataset.color!;updateSelectedStyle();} };
+$('colors').onclick=event=>{ const button=(event.target as Element).closest<HTMLButtonElement>('[data-color]'); if(button&&!busy){color=button.dataset.color!;rememberColor();updateSelectedStyle();} };
 $('stroke').oninput=()=>{updateRanges();};
-$('stroke').onchange=()=>{stroke=Number($('stroke').value);updateSelectedStyle(true);};
-bindSegments<RedactStyle>('redact-style',value=>{redactStyle=value;updateAnnotationOption('redact',{style:value});});
+$('stroke').onchange=()=>{if(busy)return;stroke=Number($('stroke').value);rememberStroke();updateSelectedStyle(true);};
+bindSegments<RedactStyle>('redact-style',value=>{redactStyle=value;editorStyles.update({redactStyle});updateAnnotationOption('redact',{style:value});});
 $('redact-strength').oninput=updateRanges;
-$('redact-strength').onchange=()=>{redactStrength=Number($('redact-strength').value);updateAnnotationOption('redact',{intensity:redactStrength});};
-bindSegments<ArrowStyle>('arrow-style',value=>{arrowStyle=value;updateAnnotationOption('arrow',{style:value});});
-bindSegments<NumberStyle>('number-style',value=>{numberStyle=value;updateAnnotationOption('number',{style:value});});
+$('redact-strength').onchange=()=>{if(busy)return;redactStrength=Number($('redact-strength').value);editorStyles.update({redactStrength});updateAnnotationOption('redact',{intensity:redactStrength});};
+bindSegments<ArrowStyle>('arrow-style',value=>{arrowStyle=value;editorStyles.update({arrowStyle});updateAnnotationOption('arrow',{style:value});});
+bindSegments<NumberStyle>('number-style',value=>{numberStyle=value;editorStyles.update({numberStyle});updateAnnotationOption('number',{style:value});});
 $('number-size').onchange=()=>{
   if(busy)return;
   const radius=Number($('number-size').value);
   if(!Number.isFinite(radius)||radius<12||radius>160)return;
-  numberRadius=radius;updateAnnotationOption('number',{radius});
+  numberRadius=radius;editorStyles.update({numberRadius});updateAnnotationOption('number',{radius});
 };
 $('number-value').onchange=()=>{
   if(busy)return;
@@ -741,7 +771,7 @@ $('number-value').onchange=()=>{
 $('font-size').onchange=()=>{
   const value=Number($('font-size').value);
   if(busy||!Number.isFinite(value)||value<8||value>512){updateUI();return;}
-  textSize=value;updateAnnotationOption('text',{fontSize:value});
+  textSize=value;editorStyles.update({textSize});updateAnnotationOption('text',{fontSize:value});
 };
 $('copy').onclick=copyImage; $('save').onclick=saveImage; $('pin').onclick=pinImage;
 $('undo').onclick=()=>undo(); $('redo').onclick=()=>undo(true); $('delete').onclick=removeSelected;
@@ -814,14 +844,19 @@ function updateShortcutLabels(status:ShortcutStatus) {
  $('capture').title=`区域截图 ${area}`.trim();$('start-capture').querySelector('kbd')!.textContent=area;
  $('pin').title=`贴图 ${pin}`.trim();
 }
-quickEditor=createQuickEditor({call,loadCapture,finishEditing:()=>{finishText();finishGesture();},serialize:()=>serializeDocument(doc!),notify,
+quickEditor=createQuickEditor({call,loadCapture,finishEditing:async()=>{finishText();finishGesture();await editorStyles.flush();},serialize:()=>serializeDocument(doc!),notify,
  canCloseCanvas:event=>!!doc&&tool==='select'&&!textEdit&&!gesture&&![...doc!.annotations].reverse().some(a=>hitTest(a,pointer(event),6/scale))});
 if(native) call('GetStatus').then(async status=>{
  updateShortcutLabels(status.shortcuts);
  const unavailable=Object.entries(status.shortcuts||{}).filter(([,value])=>value.error).map(([name])=>({area:'区域截图',window:'窗口截图',element:'元素截图',screen:'全屏截图',pin:'贴图'})[name]);
  if(unavailable.length)notify(`${unavailable.join('、')}快捷键注册失败，可在设置中更换`,true);
  if(isQuickMode)await quickEditor!.start();
+ else {await editorStyles.refresh();if(!doc&&!gesture&&!textEdit){restoreEditorStyle(tool);updateUI();}}
 }).catch(error=>notify(errorMessage(error),true));
+if(!native)void editorStyles.refresh().then(()=>{if(!doc){restoreEditorStyle(tool);updateUI();}}).catch(error=>notify(errorMessage(error),true));
+window.addEventListener('focus',()=>{
+ void editorStyles.refresh().then(()=>{if(!selected&&!textEdit&&!gesture&&!busy){restoreEditorStyle(tool);updateUI();}}).catch(error=>notify(errorMessage(error),true));
+});
 window.addEventListener('ciip:shortcuts-changed',()=>{if(native)void call('GetShortcutStatus').then(updateShortcutLabels).catch(error=>notify(errorMessage(error),true));});
 
 

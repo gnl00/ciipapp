@@ -27,6 +27,7 @@ let qaPreferences = structuredClone(window.parent.ciipPrototypePreferences || {
   shortcuts:{area:'CmdOrCtrl+Shift+2', window:'CmdOrCtrl+Alt+3', element:'', screen:'CmdOrCtrl+Alt+4', pin:'CmdOrCtrl+Shift+P'},
 });
 qaPreferences.shortcuts.element ??= '';
+let qaEditorStyle=structuredClone(window.parent.ciipPrototypeEditorStyle||{color:'#c94632',highlightColor:'#e6a32b',stroke:4,penStroke:4,highlightStroke:20,arrowStyle:'line',numberStyle:'filled',numberRadius:16,redactStyle:'blur',redactStrength:12,textSize:24});
 let nextPinID = 0;
 
 function shortcutStatus() {
@@ -61,6 +62,11 @@ window.mygo = {call:async (method, ...args) => {
   if (name === 'GetStatus') return {version:'0.10.0', shortcuts:shortcutStatus(), captureMode:qaPreferences.captureMode};
   if (name === 'GetShortcutStatus') return shortcutStatus();
   if (name === 'GetPreferences') return structuredClone(qaPreferences);
+  if (name === 'GetEditorStyle') return structuredClone(qaEditorStyle);
+  if (name === 'SetEditorStyle') {
+    qaEditorStyle={...qaEditorStyle,...args[0]};window.parent.ciipPrototypeEditorStyle=structuredClone(qaEditorStyle);
+    return structuredClone(qaEditorStyle);
+  }
   if (name === 'SetPreferences') {
     qaPreferences = structuredClone(args[0]);
     window.parent.ciipPrototypePreferences = structuredClone(qaPreferences);

@@ -39,7 +39,7 @@ function createQuickToolScroll(tools:HTMLElement) {
  tools.addEventListener('scroll',update,{passive:true});tools.addEventListener('focusin',focus);update();
  return {destroy(){resized.disconnect();selected.disconnect();tools.removeEventListener('scroll',update);tools.removeEventListener('focusin',focus);}};
 }
-export function createQuickEditor({call,loadCapture,finishEditing,serialize,notify,canCloseCanvas}:{call:NativeCall;loadCapture:(image:CaptureImage,message?:string)=>Promise<void>;finishEditing:()=>void;serialize:()=>string;notify:(message:string,error?:boolean)=>void;canCloseCanvas?:(event:MouseEvent)=>boolean}) {
+export function createQuickEditor({call,loadCapture,finishEditing,serialize,notify,canCloseCanvas}:{call:NativeCall;loadCapture:(image:CaptureImage,message?:string)=>Promise<void>;finishEditing:()=>void|Promise<void>;serialize:()=>string;notify:(message:string,error?:boolean)=>void;canCloseCanvas?:(event:MouseEvent)=>boolean}) {
  if(!isQuickMode)return null;
  document.body.classList.add('quick-mode');
  const toolbar=document.querySelector<HTMLElement>('.toolbar')!,properties=document.querySelector<HTMLElement>('.properties')!,canvas=document.querySelector<HTMLCanvasElement>('#canvas')!;
@@ -82,10 +82,10 @@ export function createQuickEditor({call,loadCapture,finishEditing,serialize,noti
   close.style.top=`${Math.max(inset,Math.min(innerHeight-size-inset,top))}px`;
   Object.assign(resizeFrame.style,{left:`${canvasRect.x}px`,top:`${canvasRect.y}px`,width:`${canvasRect.width}px`,height:`${canvasRect.height}px`});
  }
- async function finish(){if(ending)return;ending=true;windowGesture.cancel();try{await call('CloseQuick');}catch(error){ending=false;notify(errorMessage(error),true);}}
- full.onclick=async()=>{if(blocked()||windowGesture.active)return;finishEditing();ending=true;try{await call('OpenQuickInEditor',serialize());}catch(error){ending=false;notify(errorMessage(error),true);}};
+ async function finish(){if(ending)return;ending=true;windowGesture.cancel();try{await finishEditing();await call('CloseQuick');}catch(error){ending=false;notify(errorMessage(error),true);}}
+ full.onclick=async()=>{if(blocked()||windowGesture.active)return;ending=true;try{await finishEditing();await call('OpenQuickInEditor',serialize());}catch(error){ending=false;notify(errorMessage(error),true);}};
  window.addEventListener('ciip:quick-open-editor',()=>full.click());
- close.onclick=()=>{if(blocked())return;finishEditing();void finish();};
+ close.onclick=()=>{if(blocked())return;void finish();};
  window.addEventListener('ciip:quick-transfer-cancelled',()=>{ending=false;});
  window.addEventListener('blur',()=>{lastPress=null;resetMove();windowGesture.cancel();});
  window.addEventListener('pointermove',event=>{if(event.pointerId===windowPointer?.id)windowGesture.update({x:event.screenX,y:event.screenY});});
@@ -100,7 +100,7 @@ export function createQuickEditor({call,loadCapture,finishEditing,serialize,noti
   event.preventDefault();event.stopPropagation();const step=event.shiftKey?10:1;windowGesture.end({x:direction[0]*step,y:direction[1]*step});
  });
  window.addEventListener('resize',positionControls);
- canvas.addEventListener('dblclick',event=>{if(!blocked()&&canCloseCanvas?.(event)){event.preventDefault();finishEditing();void finish();}});
+ canvas.addEventListener('dblclick',event=>{if(!blocked()&&canCloseCanvas?.(event)){event.preventDefault();void finish();}});
  return {
   async start(){
    capture=await call('GetQuickCapture');await loadCapture(capture.image,'快捷编辑 · 原图已自动复制');canvas.focus({preventScroll:true});
@@ -128,7 +128,7 @@ export function createQuickEditor({call,loadCapture,finishEditing,serialize,noti
    if(blocked()||event.button!==0)return false;
    const press={time:event.timeStamp,x:event.screenX,y:event.screenY},previous=lastPress;lastPress=press;
    // Close before a second press can start another window gesture.
-   if(previous&&press.time>=previous.time&&press.time-previous.time<(capture?.doubleClickMS||500)&&Math.hypot(press.x-previous.x,press.y-previous.y)<=4){event.preventDefault();lastPress=null;finishEditing();void finish();return true;}
+   if(previous&&press.time>=previous.time&&press.time-previous.time<(capture?.doubleClickMS||500)&&Math.hypot(press.x-previous.x,press.y-previous.y)<=4){event.preventDefault();lastPress=null;void finish();return true;}
    const started=beginWindowGesture(event,'move');if(started)canvas.classList.add('is-window-moving');return started;
   },
   interacting(value:boolean){annotationGesture=value;panel.classList.toggle('is-editing',value||windowGesture.active);close.disabled=value||windowGesture.active;},
