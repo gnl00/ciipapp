@@ -15,6 +15,21 @@ static BOOL reducedMotion;
 - (BOOL)ciip_testReduceMotion { return reducedMotion; }
 @end
 
+// Record presentation updates when AppKit applies them. A busy run-loop turn can
+// contain the entire animation, so polling after that turn misses valid frames.
+@interface CIIPQuickPresentationPanel : NSPanel
+@property(nonatomic) CGFloat intermediateAlpha;
+@property(nonatomic) BOOL observeAlpha;
+@end
+@implementation CIIPQuickPresentationPanel
+- (void)setAlphaValue:(CGFloat)alpha {
+    [super setAlphaValue:alpha];
+    CGFloat presented = self.alphaValue;
+    if (self.observeAlpha && !self.intermediateAlpha && presented > 0 && presented < 1)
+        self.intermediateAlpha = presented;
+}
+@end
+
 static BOOL waitUntil(BOOL (^condition)(void)) {
     NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:5];
     while (!condition() && deadline.timeIntervalSinceNow > 0)
@@ -46,7 +61,7 @@ static void testPresentation(int argc, const char **argv) {
         NSString *directory = argc > 6 ? [NSString stringWithUTF8String:argv[6]] : nil;
         NSTimeInterval duration = argc > 1 ? atof(argv[1]) : .17;
         NSRect work = NSScreen.screens[0].visibleFrame;
-        NSPanel *window = [[NSPanel alloc] initWithContentRect:NSMakeRect(work.origin.x + 40, work.origin.y + 60, 400, 260) styleMask:NSWindowStyleMaskBorderless | NSWindowStyleMaskNonactivatingPanel backing:NSBackingStoreBuffered defer:NO];
+        CIIPQuickPresentationPanel *window = [[CIIPQuickPresentationPanel alloc] initWithContentRect:NSMakeRect(work.origin.x + 40, work.origin.y + 60, 400, 260) styleMask:NSWindowStyleMaskBorderless | NSWindowStyleMaskNonactivatingPanel backing:NSBackingStoreBuffered defer:NO];
         window.releasedWhenClosed = NO; window.hidesOnDeactivate = NO;
         window.backgroundColor = NSColor.clearColor; window.opaque = NO;
         window.contentView.wantsLayer = YES;
@@ -55,20 +70,19 @@ static void testPresentation(int argc, const char **argv) {
         [window.contentView.layer addSublayer:image]; [window.contentView.layer addSublayer:toolbar];
         NSRect initial = window.frame;
         window.alphaValue = 0; [window orderFrontRegardless]; [window displayIfNeeded];
+        window.observeAlpha = YES;
         ciip_reveal_quick_window((uintptr_t)window, duration, argc > 2 ? atof(argv[2]) : .16, argc > 3 ? atof(argv[3]) : 1, argc > 4 ? atof(argv[4]) : .3, argc > 5 ? atof(argv[5]) : 1);
         CGFloat start = window.alphaValue;
         frame(window, directory, @"quick-start.png");
         assert(start < .05);
-        // AppKit's first animation tick is asynchronous. Observe actual progress
-        // after launch instead of assuming that it has arrived within 35ms.
-        BOOL progressed = waitUntil(^BOOL { return window.alphaValue > start; });
-        CGFloat middle = window.alphaValue;
-        fprintf(stderr, "quick presentation alpha: start %.3f, middle %.3f, running %d\n", start, middle, NSApp.running);
-        assert(progressed && middle > start && middle < 1);
-        frame(window, directory, @"quick-middle.png");
-        assert(NSEqualRects(window.frame, initial));
+        // Deliberately wait for completion before inspecting the recorded updates.
+        // This also covers a run-loop turn that returns only after the fade has ended.
         BOOL settled = waitUntil(^BOOL { return window.alphaValue == 1; });
+        CGFloat middle = window.intermediateAlpha;
+        fprintf(stderr, "quick presentation alpha: start %.3f, recorded middle %.3f, settled %.3f\n", start, middle, window.alphaValue);
+        assert(middle > start && middle < 1);
         assert(settled && window.alphaValue == 1 && NSEqualRects(window.frame, initial));
+        window.observeAlpha = NO;
         frame(window, directory, @"quick-settled.png");
         reducedMotion = YES; window.alphaValue = 0;
         ciip_reveal_quick_window((uintptr_t)window, duration, .16, 1, .3, 1);
