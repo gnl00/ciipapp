@@ -136,6 +136,19 @@ static void drainFor(NSTimeInterval duration) {
     while (until.timeIntervalSinceNow > 0) [[NSRunLoop currentRunLoop] runMode:NSDefaultRunLoopMode beforeDate:until];
 }
 
+// Presentation checks may take longer than the real dwell on a busy CI compositor.
+// Keep that semantic clock pending here; testCaptureAncestorDwell covers real-time expiry.
+@interface CIIPCaptureVisualPicker : CIIPCapturePicker
+@property(nonatomic) BOOL holdAncestorDwell;
+@end
+@implementation CIIPCaptureVisualPicker
+- (BOOL)deferAncestor:(NSArray *)elements window:(NSDictionary *)window point:(CGPoint)point requestedAt:(NSTimeInterval)requestedAt {
+    BOOL deferred = [super deferAncestor:elements window:window point:point requestedAt:requestedAt];
+    if (deferred && self.holdAncestorDwell) self.ancestorProposalSince = INFINITY;
+    return deferred;
+}
+@end
+
 @interface CIIPCaptureDwellView : CIIPCaptureSelectionView
 @property(nonatomic) BOOL forceReducedMotion;
 @end
@@ -154,7 +167,8 @@ static void testCaptureAncestorVisual(NSString *directory) {
     Method mouseLocation = class_getClassMethod(NSEvent.class, @selector(mouseLocation));
     IMP originalMouseLocation = method_setImplementation(mouseLocation, (IMP)fixtureMouseLocation);
     hitGroup = hitContainer = rootChildrenAvailable = NO;
-    CIIPCapturePicker *picker = [[CIIPCapturePicker alloc] init]; picker.elementMode = YES;
+    CIIPCaptureVisualPicker *picker = [[CIIPCaptureVisualPicker alloc] init]; picker.elementMode = YES;
+    picker.holdAncestorDwell = YES;
     picker.desktopTop = NSMaxY(NSScreen.screens[0].frame); picker.selectionDuration = .12;
     NSRect work = NSScreen.screens[0].visibleFrame;
     NSRect frame = NSMakeRect(work.origin.x + 20, work.origin.y + 20, MIN(800, work.size.width - 40), MIN(480, work.size.height - 40));
@@ -190,15 +204,20 @@ static void testCaptureAncestorVisual(NSString *directory) {
     assert(usableCaptureRect(presented) && presented.size.height < 20);
     assert(!plate.hidden);
     assert([[(NSAttributedString *)dimensions.string string] isEqualToString:expectedDimensions]);
-    drainFor(.017); hitGroup = NO; leafOrigin.y += 32;
+    // Force a fresh query after the real dwell would expire, as on a slow runner.
+    drainFor(captureAncestorDwell + .03);
+    picker.point = CGPointMake(INFINITY, INFINITY); [picker sample];
+    drainUntil(^BOOL { return !picker.querying; });
+    assert(picker.pending && CGRectEqualToRect(picker.rect, (CGRect){leafOrigin, leafSize}));
+    hitGroup = NO; leafOrigin.y += 32;
     fixtureMouse.y = picker.desktopTop - leafOrigin.y - 5; [picker sample];
     drainUntil(^BOOL { return !picker.querying && !picker.pending; }); [CATransaction flush]; drainFor(.033);
-    renderDwellFrame(view.layer, directory, @"ancestor-next-line-83ms.png", panel.backingScaleFactor);
+    renderDwellFrame(view.layer, directory, @"ancestor-next-line.png", panel.backingScaleFactor);
     presented = CGPathGetBoundingBox([(CAShapeLayer *)outline.presentationLayer path]);
     assert(usableCaptureRect(presented) && presented.size.height < 20);
     drainFor(.13);
     // The stability policy survives reduced motion; only the eventual transition becomes immediate.
-    view.forceReducedMotion = YES; hitGroup = YES;
+    picker.holdAncestorDwell = NO; view.forceReducedMotion = YES; hitGroup = YES;
     fixtureMouse.y = picker.desktopTop - leafOrigin.y - leafSize.height - 3; [picker sample];
     drainUntil(^BOOL { return !picker.querying; }); assert(picker.pending);
     assert(![outline animationForKey:@"path"] && CGPathGetBoundingBox(outline.path).size.height < 20);
