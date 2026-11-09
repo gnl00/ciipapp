@@ -213,6 +213,8 @@ func (s *CaptureService) applyTray(p Preferences) error {
 			s.tray.Destroy()
 			s.tray = nil
 		}
+		s.trayAvailable.Store(false)
+		s.refreshEditorDock()
 		return nil
 	}
 	icon := nativeTrayIcon(p.MenuBarIcon)
@@ -244,9 +246,13 @@ func (s *CaptureService) applyTray(p Preferences) error {
 	}
 	tray, err := mygo.NewTray(mygo.TrayOptions{Icon: icon, IconIsTemplate: true, Title: title, ToolTip: "ciip · 截图与贴图", Menu: menu})
 	if err != nil {
+		s.trayAvailable.Store(false)
+		s.refreshEditorDock()
 		return fmt.Errorf("无法更新菜单栏：%w", err)
 	}
 	s.tray = tray
+	s.trayAvailable.Store(true)
+	s.refreshEditorDock()
 	return nil
 }
 func (s *CaptureService) GetAppInfo() map[string]any {

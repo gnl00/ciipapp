@@ -393,7 +393,7 @@ func (s *CaptureService) FinishQuickTransfer(ctx context.Context, token string, 
 		s.EndShortcutRecording()
 		current.window.Destroy()
 	} else {
-		s.editor.Hide()
+		s.dismissEditor()
 		current.window.Show()
 		current.window.Focus()
 		s.emitWindow(current.window, "ciip:quick-transfer-cancelled", nil)
@@ -426,11 +426,12 @@ func (s *CaptureService) requestOpenImage() {
 	if window == nil {
 		return
 	}
-	window.Show()
-	window.Focus()
 	if window == s.editor {
+		s.showEditor()
 		s.emit("ciip:open", nil)
 	} else {
+		window.Show()
+		window.Focus()
 		s.emitWindow(window, "ciip:open", nil)
 	}
 }

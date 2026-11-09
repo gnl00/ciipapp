@@ -77,4 +77,6 @@ Node测试直接执行只含可擦除类型的核心TS；需要VM的UI场景使�
 
 `CaptureService.*` IPC名称、文档JSON、截图坐标、图片像素、bundle identifier与偏好位置保持原意。原生Go和Objective-C仍在同包编译。OCR夹具跟随internal/app/testdata，原型与网站不会触发真实系统截图。
 
+完整编辑器普通关闭时隐藏窗口并保留文档；菜单栏可用时切为 accessory 策略，收起 Dock 中的运行图标。重新打开编辑器或打开图片时恢复 regular 策略与原文档；快捷编辑转入完整编辑器被取消时同样回到驻留状态。截图过程的临时隐藏与最小化不改变 Dock 策略，贴图和快捷编辑窗口也不接管它。菜单栏被关闭或创建失败时保留 Dock 入口，用户手动固定的 Dock 快捷方式由系统管理。退出应用仍会丢失内存文档。
+
 先前参考[mygo-music固定版本](https://github.com/egoist/mygo-music/tree/1af0d8efd77fdf630c27cfc635f12e9cb089ce10)的薄入口和内部应用包；它使用mygo/ui原生绘制，不要求ciip照搬网站或构建结构。旧版本QA/build overlay保留当时路径，不作为现在入口。

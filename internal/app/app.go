@@ -58,7 +58,7 @@ func Run() error {
 		service.editor.OnClose(func(e *mygo.CloseEvent) {
 			if !quitting.Load() {
 				e.PreventDefault()
-				service.editor.Hide()
+				service.dismissEditor()
 				go func() {
 					service.EndShortcutRecording()
 					service.cancelQuickTransfer()
@@ -118,9 +118,41 @@ func Run() error {
 
 func (s *CaptureService) showEditor() {
 	if s.editor != nil {
-		s.editor.Show()
-		s.editor.Focus()
+		mygo.RunOnMain(func() {
+			s.editorClosed.Store(false)
+			s.refreshEditorDock()
+			s.editor.Show()
+			s.editor.Focus()
+		})
 	}
+}
+
+// A capture hides the window temporarily; dismissal keeps its document in memory.
+func (s *CaptureService) dismissEditor() {
+	if s.editor == nil {
+		return
+	}
+	mygo.RunOnMain(func() {
+		s.editorClosed.Store(true)
+		s.editor.Hide()
+		s.refreshEditorDock()
+	})
+}
+
+func (s *CaptureService) editorDockPolicy() mygo.ActivationPolicy {
+	if s.editorClosed.Load() && s.trayAvailable.Load() {
+		return mygo.ActivationPolicyAccessory
+	}
+	return mygo.ActivationPolicyRegular
+}
+
+func (s *CaptureService) refreshEditorDock() {
+	mygo.RunOnMain(func() {
+		policy := s.editorDockPolicy()
+		if mygo.App.ActivationPolicy() != policy {
+			mygo.App.SetActivationPolicy(policy)
+		}
+	})
 }
 
 func (s *CaptureService) CloseEditor(ctx context.Context) error {

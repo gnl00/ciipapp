@@ -17,6 +17,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/egoist/mygo"
@@ -41,6 +42,9 @@ type CaptureService struct {
 	editorReady chan struct{}
 	readyOnce   sync.Once
 	pins        map[string]*pinnedImage
+
+	editorClosed  atomic.Bool
+	trayAvailable atomic.Bool
 }
 
 func (s *CaptureService) GetStatus() map[string]any {
