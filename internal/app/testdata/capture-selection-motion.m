@@ -107,6 +107,24 @@ int main(int argc, const char **argv) {
         view.forceReducedMotion = NO; picker.elementMode = YES;
         picker.rect = globalRect(b, panel, picker.desktopTop); [view updateSelectionAnimated:YES];
         assert([view valueForKey:@"selectionClock"]);
+
+        picker.measurementMode = YES;
+        picker.rect = globalRect(a, panel, picker.desktopTop);
+        picker.point = CGPointMake(CGRectGetMidX(picker.rect), CGRectGetMidY(picker.rect));
+        picker.elements = @[@{@"frame": [NSValue valueWithRect:NSRectFromCGRect(picker.rect)]}];
+        [view updateSelectionAnimated:NO];
+        assert(CGRectEqualToRect(CGPathGetBoundingBox(outline.path), CGRectInset(a, 1, 1)));
+        picker.rect = globalRect(b, panel, picker.desktopTop);
+        picker.point = CGPointMake(CGRectGetMidX(picker.rect), CGRectGetMidY(picker.rect));
+        picker.elements = @[@{@"frame": [NSValue valueWithRect:NSRectFromCGRect(picker.rect)]}];
+        [view updateSelectionAnimated:YES];
+        assert([view valueForKey:@"selectionClock"] && CGRectEqualToRect(CGPathGetBoundingBox(outline.path), CGRectInset(a, 1, 1)));
+        drainFor(picker.selectionDuration * 3 + .04);
+        assert(![view valueForKey:@"selectionClock"] && CGRectEqualToRect(CGPathGetBoundingBox(outline.path), CGRectInset(b, 1, 1)));
+
+        picker.rect = globalRect(c, panel, picker.desktopTop);
+        picker.elements = @[@{@"frame": [NSValue valueWithRect:NSRectFromCGRect(picker.rect)]}];
+        [view updateSelectionAnimated:YES]; assert([view valueForKey:@"selectionClock"]);
         [view removeFromSuperview]; assert(![view valueForKey:@"selectionClock"]);
         [panel close]; [panel release]; [picker release];
         puts("PASS native selection motion: geometry tolerance, continuous presentation, retargeting, stable layers, dimensions, keyboard, reduced motion, clock cleanup");

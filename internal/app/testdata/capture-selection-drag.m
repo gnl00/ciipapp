@@ -8,35 +8,64 @@
 static CGPoint mousePoint;
 static NSDictionary *queryWindow;
 static CGRect hitRect;
+static pid_t hitPID;
+static NSUInteger selectionCallbacks;
+static CGRect callbackRect;
+static uint32_t callbackWindow;
 static BOOL holdHit;
 static dispatch_semaphore_t hitStarted, releaseHit;
+static NSDictionary<NSNumber *, NSArray *> *layoutChildren;
+static NSDictionary<NSNumber *, NSValue *> *layoutFrames;
 static CFArrayRef dragWindowInfo(CGWindowListOption options, CGWindowID window);
 static AXError dragHit(AXUIElementRef application, float x, float y, AXUIElementRef *element);
 static AXError dragAttribute(AXUIElementRef element, CFStringRef attribute, CFTypeRef *value);
+static AXError dragAttributeValues(AXUIElementRef element, CFStringRef attribute, CFIndex index, CFIndex count, CFArrayRef *values);
 static AXError dragTimeout(AXUIElementRef element, float timeout) { return kAXErrorSuccess; }
 #define CGWindowListCopyWindowInfo dragWindowInfo
 #define AXUIElementCopyElementAtPosition dragHit
 #define AXUIElementCopyAttributeValue dragAttribute
+#define AXUIElementCopyAttributeValues dragAttributeValues
 #define AXUIElementSetMessagingTimeout dragTimeout
 #include "../capture_selection_darwin.m"
 
-void ciip_go_capture_selection(uintptr_t token, uint32_t window, double x, double y, double width, double height) {}
+void ciip_go_capture_selection(uintptr_t token, uint32_t window, double x, double y, double width, double height) {
+    selectionCallbacks++; callbackWindow = window; callbackRect = CGRectMake(x, y, width, height);
+}
 static CFArrayRef dragWindowInfo(CGWindowListOption options, CGWindowID window) {
     return (CFArrayRef)[(queryWindow ? @[queryWindow] : @[]) retain];
 }
 static AXError dragHit(AXUIElementRef application, float x, float y, AXUIElementRef *element) {
     if (holdHit) { dispatch_semaphore_signal(hitStarted); dispatch_semaphore_wait(releaseHit, DISPATCH_TIME_FOREVER); }
-    *element = AXUIElementCreateApplication(getpid());
+    *element = AXUIElementCreateApplication(hitPID ?: getpid());
     return kAXErrorSuccess;
 }
 static AXError dragAttribute(AXUIElementRef element, CFStringRef attribute, CFTypeRef *value) {
     *value = NULL;
-    if (CFEqual(attribute, kAXPositionAttribute)) { CGPoint point = hitRect.origin; *value = AXValueCreate(kAXValueCGPointType, &point); }
-    else if (CFEqual(attribute, kAXSizeAttribute)) { CGSize size = hitRect.size; *value = AXValueCreate(kAXValueCGSizeType, &size); }
+    pid_t pid = 0; AXUIElementGetPid(element, &pid);
+    NSValue *frame = layoutFrames[@(pid)];
+    NSArray *children = layoutChildren[@(pid)];
+    CGRect rect = frame ? NSRectToCGRect(frame.rectValue) : children ? CGRectNull : hitRect;
+    if (CFEqual(attribute, kAXPositionAttribute)) {
+        if (CGRectIsNull(rect)) return kAXErrorNoValue;
+        *value = AXValueCreate(kAXValueCGPointType, &rect.origin);
+    }
+    else if (CFEqual(attribute, kAXSizeAttribute)) {
+        if (CGRectIsNull(rect)) return kAXErrorNoValue;
+        *value = AXValueCreate(kAXValueCGSizeType, &rect.size);
+    }
     else if (CFEqual(attribute, kAXRoleAttribute)) *value = CFRetain(kAXButtonRole);
     else if (CFEqual(attribute, kAXRoleDescriptionAttribute)) *value = CFRetain(CFSTR("按钮"));
-    else if (CFEqual(attribute, kAXChildrenAttribute)) *value = CFArrayCreate(NULL, NULL, 0, &kCFTypeArrayCallBacks);
+    else if (CFEqual(attribute, kAXChildrenAttribute)) *value = (CFTypeRef)[(children ?: @[]) retain];
     else return kAXErrorNoValue;
+    return kAXErrorSuccess;
+}
+static AXError dragAttributeValues(AXUIElementRef element, CFStringRef attribute, CFIndex index, CFIndex count, CFArrayRef *values) {
+    *values = NULL;
+    if (!CFEqual(attribute, kAXChildrenAttribute)) return kAXErrorAttributeUnsupported;
+    assert(index == 0 && count <= 96);
+    pid_t pid = 0; AXUIElementGetPid(element, &pid);
+    NSArray *children = layoutChildren[@(pid)] ?: @[];
+    *values = (CFArrayRef)[[children subarrayWithRange:NSMakeRange(0, MIN((NSUInteger)count, children.count))] retain];
     return kAXErrorSuccess;
 }
 
@@ -71,8 +100,8 @@ static void drainFor(NSTimeInterval seconds) {
 static CGRect panelRect(NSPanel *panel, CGFloat top) {
     return CGRectMake(panel.frame.origin.x, top - NSMaxY(panel.frame), panel.frame.size.width, panel.frame.size.height);
 }
-static CIIPDragProbe *fixture(void) {
-    CIIPDragProbe *picker = [[CIIPDragProbe alloc] init]; picker.elementMode = YES;
+static CIIPCapturePicker *pickerFixture(Class pickerClass) {
+    CIIPCapturePicker *picker = [[pickerClass alloc] init]; picker.elementMode = YES;
     picker.desktopTop = NSMaxY(NSScreen.screens[0].frame); picker.selectionDuration = .12;
     NSRect work = NSScreen.screens[0].visibleFrame;
     NSRect frames[] = {NSMakeRect(work.origin.x + 40, work.origin.y + 60, 340, 220), NSMakeRect(-200, picker.desktopTop + 20, 200, 180)};
@@ -84,6 +113,7 @@ static CIIPDragProbe *fixture(void) {
     }
     return picker;
 }
+static CIIPDragProbe *fixture(void) { return (CIIPDragProbe *)pickerFixture(CIIPDragProbe.class); }
 static void closeFixture(CIIPDragProbe *picker) {
     for (NSPanel *panel in picker.panels) [panel close];
     [picker release];
@@ -205,13 +235,120 @@ static void testLateAXDoesNotReplaceDrag(void) {
     [queryWindow release]; queryWindow = nil;
     dispatch_release(hitStarted); dispatch_release(releaseHit); closeFixture(picker);
 }
+static void awaitMeasurementHit(CIIPCapturePicker *picker) {
+    NSDate *until = [NSDate dateWithTimeIntervalSinceNow:2];
+    while (picker.querying && until.timeIntervalSinceNow > 0) drainFor(.001);
+    assert(!picker.querying && !picker.pending);
+}
+static void testLayoutCollection(void) {
+    pid_t base = getpid() + 30;
+    NSMutableArray *nodes = [NSMutableArray array];
+    for (NSUInteger i = 0; i < 8; i++) {
+        AXUIElementRef element = AXUIElementCreateApplication(base + (pid_t)i);
+        [nodes addObject:(id)element]; CFRelease(element);
+    }
+    CGRect container = CGRectMake(-100, 30, 100, 100), clip = CGRectMake(-100, 30, 60, 100);
+    NSValue *containerValue = [NSValue valueWithRect:NSRectFromCGRect(container)];
+    NSValue *first = [NSValue valueWithRect:NSMakeRect(-90, 40, 20, 10)];
+    NSValue *partiallyVisible = [NSValue valueWithRect:NSMakeRect(-50, 65, 22, 10)];
+    layoutFrames = @{@(base): containerValue, @(base + 1): containerValue,
+        @(base + 3): first, @(base + 4): first, @(base + 5): partiallyVisible,
+        @(base + 6): [NSValue valueWithRect:NSMakeRect(-30, 65, 10, 10)],
+        @(base + 7): [NSValue valueWithRect:NSMakeRect(-110, 65, 20, 10)]};
+    layoutChildren = @{@(base): @[nodes[1], nodes[6], nodes[7], @"not an AX node"],
+        @(base + 1): @[nodes[2], nodes[0]], @(base + 2): @[nodes[3], nodes[4], nodes[5]]};
+    NSArray *result = captureLayoutChildren((AXUIElementRef)nodes[0], container, clip);
+    assert(([result isEqualToArray:@[first, partiallyVisible]]));
+    layoutChildren = nil; layoutFrames = nil;
+}
+static void testMeasurementSession(void) {
+    CIIPCapturePicker *picker = pickerFixture(CIIPCapturePicker.class); picker.measurementMode = YES; picker.selectionDuration = 0;
+    CIIPCaptureSelectionView *view = [[[picker.panels[0] contentView] retain] autorelease];
+    CGRect frame = panelRect(picker.panels[0], picker.desktopTop);
+    CGRect targetWindowFrame = CGRectMake(frame.origin.x + 40, frame.origin.y, frame.size.width - 40, frame.size.height);
+    CFDictionaryRef bounds = CGRectCreateDictionaryRepresentation(targetWindowFrame);
+    queryWindow = [@{(id)kCGWindowNumber:@77, (id)kCGWindowOwnerPID:@(getpid()), (id)kCGWindowOwnerName:@"Synthetic QA", (id)kCGWindowAlpha:@1, (id)kCGWindowBounds:(id)bounds} retain];
+    CFRelease(bounds);
+    CGPoint first = pointInView(view, 100, 140), second = pointInView(view, 260, 140);
+    hitRect = CGRectMake(frame.origin.x + 30, first.y - 60, 120, 120);
+    CGRect reference = hitRect;
+    pid_t childPID = getpid() + 20;
+    AXUIElementRef child = AXUIElementCreateApplication(childPID);
+    NSValue *childFrame = [NSValue valueWithRect:NSMakeRect(frame.origin.x + 53, first.y - 20, 36, 40)];
+    layoutFrames = @{@(getpid()): [NSValue valueWithRect:NSRectFromCGRect(reference)], @(childPID): childFrame};
+    layoutChildren = @{@(getpid()): @[(id)child]}; CFRelease(child);
+    [view mouseMoved:mouse(view, NSEventTypeMouseMoved, first)];
+    awaitMeasurementHit(picker);
+    assert(CGRectEqualToRect([picker measurementFrame], reference) && picker.rect.size.width == 110);
+    NSDate *until = [NSDate dateWithTimeIntervalSinceNow:2];
+    while (!picker.measurementLayoutChildren.count && until.timeIntervalSinceNow > 0) drainFor(.001);
+    assert(!picker.measurementLayoutQuerying && [picker.measurementLayoutChildren isEqualToArray:@[childFrame]]);
+    CALayer *measurement = view.layer.sublayers[2];
+    CALayer *layout = measurement.sublayers[measurement.sublayers.count - 2];
+    CAShapeLayer *childBoxes = (CAShapeLayer *)layout.sublayers[0];
+    CAShapeLayer *spacingLines = (CAShapeLayer *)layout.sublayers[1];
+    assert(!layout.hidden && CGRectEqualToRect(CGPathGetBoundingBox(childBoxes.path), CGRectMake(53, 60, 36, 40)));
+    assert(!CGPathIsEmpty(spacingLines.path));
+    BOOL showsChildSize = NO, showsGap = NO;
+    for (CALayer *badge in layout.sublayers[2].sublayers) {
+        if (badge.hidden) continue;
+        CATextLayer *text = (CATextLayer *)badge.sublayers.firstObject;
+        NSString *label = [text.string string];
+        showsChildSize |= [label isEqualToString:@"36 × 40 pt"];
+        showsGap |= [label isEqualToString:@"40 pt"];
+    }
+    assert(showsChildSize && showsGap);
+    CATextLayer *dimensions = (CATextLayer *)[view.layer.sublayers.lastObject sublayers].firstObject;
+    assert([[dimensions.string string] isEqualToString:@"120 × 120 pt"]);
+    [view mouseDown:mouse(view, NSEventTypeLeftMouseDown, first)];
+    [view mouseUp:mouse(view, NSEventTypeLeftMouseUp, first)];
+    assert(picker.measurementReference.count == 1 && !picker.finished && selectionCallbacks == 0);
+
+    hitRect = CGRectMake(second.x - 10, second.y - 10, 30, 20); hitPID = getpid() + 1;
+    [view mouseMoved:mouse(view, NSEventTypeMouseMoved, second)];
+    awaitMeasurementHit(picker);
+    assert(!picker.measurementLayoutChildren.count);
+    CIIPMeasurementGuide guides[4];
+    assert([picker measurementGuides:guides] == 1);
+    assert(CGPointEqualToPoint(guides[0].start, CGPointMake(CGRectGetMaxX(reference), first.y)));
+    assert(CGPointEqualToPoint(guides[0].end, CGPointMake(CGRectGetMinX(hitRect), second.y)));
+    CAShapeLayer *referenceOutline = (CAShapeLayer *)measurement.sublayers[0];
+    CALayer *distancePlate = measurement.sublayers[2];
+    CATextLayer *distanceLabel = (CATextLayer *)distancePlate.sublayers.firstObject;
+    assert(!CGPathIsEmpty(referenceOutline.path) && !distancePlate.hidden);
+    assert([[distanceLabel.string string] isEqualToString:@"100 pt"]);
+
+    CGPoint above = pointInView(view, 76, 55);
+    hitRect = CGRectMake(above.x - 50, above.y - 10, 100, 20);
+    [view mouseMoved:mouse(view, NSEventTypeMouseMoved, above)];
+    awaitMeasurementHit(picker);
+    assert([[distanceLabel.string string] isEqualToString:@"15 pt"]);
+    assert(!CGRectIntersectsRect(distancePlate.frame, view.layer.sublayers.lastObject.frame));
+
+    [view keyDown:key(36)];
+    assert(!picker.finished && [picker measurementGuides:guides] == 0);
+    assert(CGRectEqualToRect(NSRectToCGRect([picker.measurementReference[0][@"frame"] rectValue]), hitRect));
+    assert(distancePlate.hidden);
+    CGPoint empty = pointInView(view, 315, 120);
+    [view mouseMoved:mouse(view, NSEventTypeMouseMoved, empty)];
+    awaitMeasurementHit(picker);
+    CALayer *status = measurement.sublayers.lastObject;
+    CATextLayer *statusLabel = (CATextLayer *)status.sublayers.firstObject;
+    assert(!status.hidden && [[statusLabel.string string] containsString:@"此处没有可识别元素"]);
+    assert(picker.measurementReference.count == 1 && !CGPathIsEmpty(referenceOutline.path));
+    [view keyDown:key(53)];
+    assert(picker.finished && !picker.panels.count && selectionCallbacks == 1 && callbackWindow == 0 && CGRectEqualToRect(callbackRect, CGRectZero));
+    hitPID = 0; [queryWindow release]; queryWindow = nil; layoutChildren = nil; layoutFrames = nil;
+}
 int main(int argc, const char **argv) {
     @autoreleasepool {
+        testLayoutCollection();
         [NSApplication sharedApplication]; assert(NSScreen.screens.count);
         method_exchangeImplementations(class_getClassMethod(NSEvent.class, @selector(mouseLocation)), class_getClassMethod(NSEvent.class, @selector(ciip_dragMouse)));
         testClickAndDrag(argc > 1 ? [NSString stringWithUTF8String:argv[1]] : nil);
         testReverseAndDesktopClip(); testCancellation(); testLateAXDoesNotReplaceDrag();
-        puts("PASS element click, 4pt drag threshold, immediate region rendering, reverse/desktop clipping, full release cancellation, late AX rejection");
+        testMeasurementSession();
+        puts("PASS element click, drag, cancellation, late AX rejection, and element measurement session");
     }
     return 0;
 }

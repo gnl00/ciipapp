@@ -1,12 +1,20 @@
-# 窗口与元素截图
+# 窗口截图、元素截图与测量
 
 窗口截图使用原生 AppKit 选择层。悬停高亮目标窗口，游标仅显示所属应用的真实图标，不显示相机、名称、窗口标题或信息卡片。元素截图使用十字游标，选区旁仅展示 `宽 × 高 px`。鼠标松开或按回车确认；Esc 或右键松开取消。选择层仅排除自身的遮罩窗口，贴图仍可作为截图目标。
 
 元素截图入口位于编辑器截图菜单、应用截图菜单和菜单栏。悬停选择应用公开的辅助功能元素，↑ 选择外层、↓ 返回内层，单击或回车截取元素；按下后拖动超过 4 个逻辑点切换到区域框选，松开截取手动区域。框选可从没有 AX 元素的空白区域开始，支持反方向和跨显示器拖动，选区裁到桌面范围。拖动期间冻结自动命中并丢弃迟到的 AX 回包，尺寸与选框直接跟随指针；小幅手抖仍按元素单击处理。默认不分配全局快捷键，可在设置中绑定。未识别到有效元素时不能单击确认，可直接拖动框选；不会静默改为截取整个窗口。自绘画布、游戏或未提供辅助功能结构的应用可能只能识别容器，无法保证识别每个视觉元素。
 
+## 元素测量
+
+从菜单栏的 ciip 菜单或应用的「文件」菜单打开「元素测量」。悬停查看宽高，按 ↑ 选中外层容器，即可查看子元素的边框和尺寸、相邻子元素的水平或垂直间距，以及子元素整体到容器四边的留白。按 ↓ 返回内层。单击或按回车锁定参照，再悬停其他元素查看两框的边到边间距。再次单击或回车可更换参照。按 Esc 或右键退出。
+
+读数使用辅助功能 API 提供的元素边界，单位为 macOS 逻辑点 `pt`。留白是边界之间的几何距离，网页样式中的 `border`、`margin` 和 `padding` 各自占多少需要 DOM 样式信息。参照框保留锁定时的位置与尺寸。自绘控件或只公开容器的应用可能无法提供更细的边界。
+
+测量沿用元素截图的悬停选择和选框跟随动效。子元素在后台限量查询，选框稳定后显示布局标注。对于边框密集的容器，重叠的数字标签会让位给间距标签，可以切换到更内层查看局部。
+
 ## 权限与实现边界
 
-所有截图仍需屏幕录制权限。仅元素截图额外调用 `AXIsProcessTrustedWithOptions`，首次使用由系统提示辅助功能授权；未授权时保留当前编辑器并给出设置路径。现有屏幕录制拖拽引导不申请辅助功能权限。
+所有截图仍需屏幕录制权限，元素截图还需要辅助功能权限。元素测量只请求辅助功能权限，直接读取窗口和元素的几何信息。两种元素功能都通过 `AXIsProcessTrustedWithOptions` 触发系统授权提示，缺少授权时给出设置路径。现有屏幕录制拖拽引导不申请辅助功能权限。
 
 选择层通过 `CGWindowListCopyWindowInfo` 识别指针下最上层窗口，用 `NSRunningApplication` 读取应用图标，名称和元素描述仅用于辅助功能标签。元素识别向该应用的 AX 根对象发起命中测试，避免命中自身遮罩；鼠标跟踪事件立即采样，低频计时器补查遗漏的指针事件；后台单次查询合并为最新指针请求，复用当前应用的 AX 根对象。150ms 单次 IPC 超时与有界遍历防止目标应用拖住主线程。同一窗口内重新识别时保留最近有效的高亮，结果就绪后一次性替换，避免每次指针移动都先清空再恢复。仍命中同一最内层元素时保留用户选择的外层层级；切换窗口、窗口边界改变或确认无有效元素时清空旧选择。保留的画面不代表新指针位置已经确认：识别期间不能截图或切换层级，指针移出结果的最内层元素或目标窗口不匹配时，旧结果会被丢弃。
 
@@ -57,5 +65,7 @@ build/capture-selection-qa/regression build/capture-selection-qa
 ```
 
 真实应用验收需另行覆盖：授权前后、鼠标首次点击与键盘取消、多个应用的控件层级、不支持 AX 的内容、窗口移动/关闭、Retina 与负坐标副屏、显示器变更、最终图片不包含遮罩，以及取消后原文档与窗口可见性的恢复。夹具不替代这些跨进程与系统权限验证。
+
+元素测量的原生验收使用已授予辅助功能权限、未授予屏幕录制权限的测试应用身份。分别从两个菜单打开测量，核对宽高、跨元素间距、父子留白及退出后的编辑器状态。在缩放倍率不同的显示器上对比读数，确认单位始终为 `pt`。
 
 API 依据：[AX 命中测试](https://developer.apple.com/documentation/applicationservices/1462077-axuielementcopyelementatposition)、[辅助功能授权检查](https://developer.apple.com/documentation/applicationservices/1459186-axisprocesstrustedwithoptions)、[WindowServer 鼠标命中与透明区域](https://developer.apple.com/documentation/appkit/nswindow/windownumber%28at%3Abelowwindowwithwindownumber%3A%29)、[CAShapeLayer 路径](https://developer.apple.com/documentation/quartzcore/cashapelayer/path)、[presentation layer](https://developer.apple.com/documentation/quartzcore/calayer/presentation%28%29)、[减少动态效果](https://developer.apple.com/documentation/appkit/nsworkspace/accessibilitydisplayshouldreducemotion)。`screencapture` 参数以本机系统工具的 usage 为依据。

@@ -93,6 +93,7 @@ func Run() error {
 				{Label: "窗口截图", Click: capture("window")},
 				{Label: "元素截图", Click: capture("element")},
 				{Label: "全屏截图", Click: capture("screen")},
+				mygo.Separator(), {Label: "元素测量", Click: func(*mygo.MenuItem, *mygo.Window) { go service.measureElementsAndNotify() }},
 				mygo.Separator(), {Label: "打开图片…", Click: openImage},
 				{Label: "保存图片…", Click: editAction("ciip:save")},
 				{Role: mygo.RoleClose},
@@ -202,15 +203,25 @@ func (s *CaptureService) report(err error) {
 func (s *CaptureService) captureAndNotify(mode string) {
 	img, err := s.Capture(context.Background(), mode)
 	if err != nil {
-		if !s.focusQuickEditor() {
-			s.showEditor()
-		}
-		s.report(err)
+		s.reportScreenActionError(err)
 		return
 	}
 	if img != nil {
 		s.emit("ciip:image", img)
 	}
+}
+
+func (s *CaptureService) measureElementsAndNotify() {
+	if err := s.measureElements(context.Background()); err != nil {
+		s.reportScreenActionError(err)
+	}
+}
+
+func (s *CaptureService) reportScreenActionError(err error) {
+	if !s.focusQuickEditor() {
+		s.showEditor()
+	}
+	s.report(err)
 }
 
 func trayPNG() []byte {

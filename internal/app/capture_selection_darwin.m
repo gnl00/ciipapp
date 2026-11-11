@@ -5,6 +5,7 @@
 #import <QuartzCore/QuartzCore.h>
 #include <stdint.h>
 #include <math.h>
+#import "capture_measurement_darwin.h"
 
 extern void ciip_go_capture_selection(uintptr_t, uint32_t, double, double, double, double);
 
@@ -64,6 +65,8 @@ static BOOL captureElementRect(AXUIElementRef element, CGRect *rect) {
     *rect = (CGRect){origin, dimensions};
     return usableCaptureRect(*rect);
 }
+
+#import "capture_layout_ax_darwin.h"
 
 static void visitCaptureElements(AXUIElementRef element, CGPoint point, CGRect clip, NSTimeInterval deadline, NSUInteger depth,
     CFMutableSetRef visited, AXUIElementRef *smallest, CGRect *smallestRect, NSUInteger *smallestDepth, BOOL *incomplete) {
@@ -144,15 +147,16 @@ static NSArray *captureElementsAtPoint(pid_t pid, CGPoint point, CGRect clip, NS
     // Bound traversal for malformed trees and applications that return a cyclic parent chain.
     for (NSUInteger depth = 0; element && depth < 32 && NSProcessInfo.processInfo.systemUptime - started < .5; depth++) {
         AXUIElementSetMessagingTimeout(element, .15);
-        CGRect rect;
-        if (captureElementRect(element, &rect)) {
-            rect = CGRectIntersection(rect, clip);
+        CGRect frame;
+        if (captureElementRect(element, &frame)) {
+            CGRect rect = CGRectIntersection(frame, clip);
             if (usableCaptureRect(rect) && CGRectContainsPoint(rect, point) && !CGRectEqualToRect(rect, previous) &&
                 (CGRectIsNull(previous) || CGRectContainsRect(rect, previous))) {
                 CFTypeRef role = NULL;
                 AXUIElementCopyAttributeValue(element, kAXRoleDescriptionAttribute, &role);
                 NSString *label = role && CFGetTypeID(role) == CFStringGetTypeID() ? (NSString *)role : @"元素";
-                [candidates addObject:@{@"rect": [NSValue valueWithRect:NSRectFromCGRect(rect)], @"label": label, @"element": (id)element}];
+                [candidates addObject:@{@"rect": [NSValue valueWithRect:NSRectFromCGRect(rect)],
+                    @"frame": [NSValue valueWithRect:NSRectFromCGRect(frame)], @"label": label, @"element": (id)element}];
                 if (role) CFRelease(role);
                 previous = rect;
             }
@@ -178,10 +182,10 @@ static NSArray *captureElementsKeepingLeaf(NSArray *elements, NSArray *previous,
     AXUIElementRef oldElement = (AXUIElementRef)leaf[@"element"], ancestor = (AXUIElementRef)first[@"element"];
     if (!oldElement || !ancestor || CGRectEqualToRect(oldRect, newRect) ||
         !CGRectContainsPoint(oldRect, point) || !CGRectContainsRect(newRect, oldRect)) return elements;
-    CGRect liveRect;
+    CGRect liveFrame;
     AXUIElementSetMessagingTimeout(oldElement, .05);
-    if (!captureElementRect(oldElement, &liveRect)) return elements;
-    liveRect = CGRectIntersection(liveRect, clip);
+    if (!captureElementRect(oldElement, &liveFrame)) return elements;
+    CGRect liveRect = CGRectIntersection(liveFrame, clip);
     if (!closeCaptureRects(liveRect, oldRect, .75) || !CGRectContainsPoint(liveRect, point)) return elements;
     AXUIElementRef current = (AXUIElementRef)CFRetain(oldElement);
     NSTimeInterval deadline = NSProcessInfo.processInfo.systemUptime + .15;
@@ -202,6 +206,7 @@ static NSArray *captureElementsKeepingLeaf(NSArray *elements, NSArray *previous,
     if (!attached) return elements;
     NSMutableDictionary *liveLeaf = [[leaf mutableCopy] autorelease];
     liveLeaf[@"rect"] = [NSValue valueWithRect:NSRectFromCGRect(liveRect)];
+    liveLeaf[@"frame"] = [NSValue valueWithRect:NSRectFromCGRect(liveFrame)];
     NSMutableArray *resolved = [NSMutableArray arrayWithObject:liveLeaf];
     [resolved addObjectsFromArray:elements];
     return resolved;
@@ -212,6 +217,14 @@ static NSArray *captureElementsKeepingLeaf(NSArray *elements, NSArray *previous,
     CAShapeLayer *_shade, *_outline;
     CALayer *_dimensionPlate;
     CATextLayer *_dimensions;
+    CALayer *_measurement, *_measurementStatus, *_measurementLabels[4];
+    CAShapeLayer *_measurementReference, *_measurementLines;
+    CALayer *_layoutOverlay, *_layoutBadges;
+    CAShapeLayer *_layoutBoxes, *_layoutLines;
+    NSArray *_drawnLayout;
+    CGRect _drawnLayoutBounds;
+    BOOL _drawnLayoutOnPointerDisplay;
+    CGFloat _drawnLayoutScale;
     CGRect _selectionRect, _displayedSelection, _surfaceBounds;
     id _selectionClock;
     NSTrackingArea *_pointerTrackingArea;
@@ -233,7 +246,7 @@ static NSArray *captureElementsKeepingLeaf(NSArray *elements, NSArray *previous,
 
 @interface CIIPCapturePicker : NSObject
 @property(nonatomic) uintptr_t token;
-@property(nonatomic) BOOL elementMode, finished, pending, querying;
+@property(nonatomic) BOOL elementMode, measurementMode, finished, pending, querying;
 @property(nonatomic) BOOL trackingSelection, draggingSelection;
 @property(nonatomic) CGPoint dragStart, dragPoint;
 @property(nonatomic) CGFloat desktopTop;
@@ -241,6 +254,10 @@ static NSArray *captureElementsKeepingLeaf(NSArray *elements, NSArray *previous,
 @property(nonatomic) CGRect rect;
 @property(nonatomic, retain) NSDictionary *targetWindow;
 @property(nonatomic, retain) NSArray *elements;
+@property(nonatomic, retain) NSArray *measurementReference;
+@property(nonatomic, retain) NSDictionary *measurementLayoutTarget;
+@property(nonatomic, retain) NSArray *measurementLayoutChildren;
+@property(nonatomic) BOOL measurementLayoutQuerying;
 @property(nonatomic, retain) NSMutableDictionary *applications;
 @property(nonatomic) NSUInteger elementIndex;
 @property(nonatomic) NSUInteger unresolvedRetries;
@@ -262,6 +279,8 @@ static NSArray *captureElementsKeepingLeaf(NSArray *elements, NSArray *previous,
 - (void)beginSelectionAtPoint:(CGPoint)point;
 - (void)updateSelectionAtPoint:(CGPoint)point;
 - (void)completeSelectionGesture;
+- (CGRect)measurementFrame;
+- (NSUInteger)measurementGuides:(CIIPMeasurementGuide *)guides;
 - (void)confirm;
 - (void)finish:(BOOL)accepted;
 - (void)keyDown:(NSEvent *)event;
@@ -271,6 +290,46 @@ static CIIPCapturePicker *activeCapturePicker;
 // A pointer crossing the gap between children should not briefly spotlight their entire ancestor.
 // This selection policy also applies when the user reduces visual animation.
 static const NSTimeInterval captureAncestorDwell = .12;
+
+static NSString *measurementNumber(CGFloat points) {
+    return [NSNumberFormatter localizedStringFromNumber:@(points) numberStyle:NSNumberFormatterDecimalStyle];
+}
+
+static NSString *measurementDimensions(CGRect rect) {
+    return [NSString stringWithFormat:@"%@ × %@ pt", measurementNumber(rect.size.width), measurementNumber(rect.size.height)];
+}
+
+static void appendMeasurementGuide(CGMutablePathRef path, CGPoint start, CGPoint end) {
+    CGFloat dx = start.y == end.y ? 0 : 3, dy = start.y == end.y ? 3 : 0;
+    CGPathMoveToPoint(path, NULL, start.x, start.y); CGPathAddLineToPoint(path, NULL, end.x, end.y);
+    CGPathMoveToPoint(path, NULL, start.x - dx, start.y - dy); CGPathAddLineToPoint(path, NULL, start.x + dx, start.y + dy);
+    CGPathMoveToPoint(path, NULL, end.x - dx, end.y - dy); CGPathAddLineToPoint(path, NULL, end.x + dx, end.y + dy);
+}
+
+static CALayer *measurementBadge(CALayer *parent) {
+    CALayer *plate = [CALayer layer]; plate.cornerRadius = 5; plate.hidden = YES;
+    CATextLayer *label = [CATextLayer layer]; label.alignmentMode = kCAAlignmentCenter;
+    [plate addSublayer:label]; [parent addSublayer:plate];
+    return plate;
+}
+
+static CGPoint measurementBadgeCenter(CGPoint center, CGSize size, CGRect bounds) {
+    CGFloat x = size.width / 2 + 4, y = size.height / 2 + 4;
+    return CGPointMake(MAX(x, MIN(center.x, CGRectGetMaxX(bounds) - x)), MAX(y, MIN(center.y, CGRectGetMaxY(bounds) - y)));
+}
+
+static void positionMeasurementBadge(CALayer *plate, NSString *text, CGPoint center, CGRect bounds, CGFloat scale, BOOL compact) {
+    NSAttributedString *value = [[[NSAttributedString alloc] initWithString:text
+        attributes:@{NSFontAttributeName:[NSFont monospacedDigitSystemFontOfSize:compact ? 10 : 12 weight:NSFontWeightMedium],
+            NSForegroundColorAttributeName:NSColor.labelColor}] autorelease];
+    CGFloat width = ceil(value.size.width) + (compact ? 8 : 14), height = compact ? 17 : 24;
+    plate.bounds = CGRectMake(0, 0, width, height);
+    plate.position = measurementBadgeCenter(center, plate.bounds.size, bounds);
+    plate.backgroundColor = NSColor.windowBackgroundColor.CGColor; plate.hidden = NO;
+    CATextLayer *label = (CATextLayer *)plate.sublayers.firstObject;
+    label.frame = CGRectMake(0, compact ? 1 : 3, width, compact ? 14 : 18);
+    label.contentsScale = scale; label.string = value;
+}
 
 @implementation CIIPCaptureSelectionView
 - (instancetype)initWithFrame:(NSRect)frame {
@@ -346,26 +405,192 @@ static const NSTimeInterval captureAncestorDwell = .12;
     if (!newWindow) [self stopSelectionAnimation];
     [super viewWillMoveToWindow:newWindow];
 }
-- (void)dealloc { [self stopSelectionAnimation]; [_pointerTrackingArea release]; [super dealloc]; }
-- (void)drawSelectionRect:(CGRect)selected {
+- (void)dealloc { [self stopSelectionAnimation]; [_pointerTrackingArea release]; [_drawnLayout release]; [super dealloc]; }
+- (CGPoint)measurementPointInView:(CGPoint)point {
+    NSRect window = self.window.frame;
+    return CGPointMake(point.x - NSMinX(window), self.picker.desktopTop - point.y - NSMinY(window));
+}
+- (CGRect)measurementRectInView:(CGRect)rect {
+    return (CGRect){[self measurementPointInView:CGPointMake(CGRectGetMinX(rect), CGRectGetMaxY(rect))], rect.size};
+}
+- (void)drawMeasurementLayout:(CGRect)bounds scale:(CGFloat)scale pointerHere:(BOOL)pointerHere {
+    NSArray *children = self.picker.measurementLayoutChildren;
+    if (_drawnLayout == children && CGRectEqualToRect(_drawnLayoutBounds, bounds) &&
+        _drawnLayoutOnPointerDisplay == pointerHere && _drawnLayoutScale == scale) return;
+    [_drawnLayout release]; _drawnLayout = [children retain];
+    _drawnLayoutBounds = bounds; _drawnLayoutOnPointerDisplay = pointerHere; _drawnLayoutScale = scale;
+    _layoutOverlay.frame = _layoutBoxes.frame = _layoutLines.frame = _layoutBadges.frame = bounds;
+    NSColor *accent = NSColor.keyboardFocusIndicatorColor;
+    BOOL contrast = NSWorkspace.sharedWorkspace.accessibilityDisplayShouldIncreaseContrast;
+    _layoutBoxes.strokeColor = [accent colorWithAlphaComponent:contrast ? 1 : .8].CGColor;
+    _layoutBoxes.fillColor = [accent colorWithAlphaComponent:.15].CGColor;
+    _layoutBoxes.lineWidth = contrast ? 2 : 1;
+    _layoutLines.strokeColor = accent.CGColor;
+    _layoutLines.lineWidth = contrast ? 2 : 1;
+    _layoutBadges.sublayers = nil;
+    NSMutableArray<CALayer *> *occupied = [NSMutableArray array];
+    if (!_measurementStatus.hidden) [occupied addObject:_measurementStatus];
+    if (!_dimensionPlate.hidden) [occupied addObject:_dimensionPlate];
+    CGMutablePathRef boxes = CGPathCreateMutable(), lines = CGPathCreateMutable();
+    CGRect frames[captureLayoutChildLimit];
+    NSUInteger count = MIN(children.count, captureLayoutChildLimit);
+    for (NSUInteger i = 0; i < count; i++) {
+        frames[i] = NSRectToCGRect([children[i] rectValue]);
+        CGPathAddRect(boxes, NULL, [self measurementRectInView:frames[i]]);
+    }
+    CIIPMeasurementGuide guides[24];
+    CGRect container = NSRectToCGRect([self.picker.measurementLayoutTarget[@"frame"] rectValue]);
+    NSUInteger guideCount = captureLayoutGuides(container, frames, count, guides, sizeof(guides) / sizeof(*guides));
+    for (NSUInteger i = 0; i < guideCount + count; i++) {
+        BOOL gap = i < guideCount;
+        BOOL horizontal = NO;
+        CGPoint center;
+        NSString *text;
+        if (gap) {
+            CGPoint start = [self measurementPointInView:guides[i].start], end = [self measurementPointInView:guides[i].end];
+            horizontal = start.y == end.y;
+            appendMeasurementGuide(lines, start, end);
+            center = CGPointMake((start.x + end.x) / 2, (start.y + end.y) / 2);
+            text = [NSString stringWithFormat:@"%@ pt", measurementNumber(hypot(end.x - start.x, end.y - start.y))];
+        } else {
+            CGRect child = frames[i - guideCount], local = [self measurementRectInView:child];
+            center = CGPointMake(CGRectGetMidX(local), CGRectGetMidY(local));
+            text = measurementDimensions(child);
+        }
+        if (!CGRectContainsPoint(bounds, center)) continue;
+        CALayer *plate = measurementBadge(_layoutBadges);
+        positionMeasurementBadge(plate, text, center, bounds, scale, YES);
+        CGFloat dx = gap && !horizontal ? CGRectGetWidth(plate.bounds) / 2 + 4 : 0;
+        CGFloat dy = gap ? (horizontal ? CGRectGetHeight(plate.bounds) / 2 + 4 : 0) : CGRectGetHeight(plate.bounds);
+        CGPoint candidates[] = {CGPointMake(center.x + dx, center.y + dy), CGPointMake(center.x - dx, center.y - dy), center};
+        for (NSUInteger attempt = 0; attempt < 3; attempt++) {
+            NSUInteger index = gap ? attempt : (attempt + 2) % 3;
+            plate.position = measurementBadgeCenter(candidates[index], plate.bounds.size, bounds);
+            CGRect frame = CGRectInset(plate.frame, -2, -2);
+            BOOL overlap = NO;
+            for (CALayer *other in occupied) {
+                if (CGRectIntersectsRect(frame, other.frame)) { overlap = YES; break; }
+            }
+            plate.hidden = overlap;
+            if (!overlap) { [occupied addObject:plate]; break; }
+        }
+    }
+    _layoutBoxes.path = boxes; CGPathRelease(boxes);
+    _layoutLines.path = lines; CGPathRelease(lines);
+}
+- (void)drawMeasurement {
+    CIIPCapturePicker *picker = self.picker;
+    if (!_measurement) {
+        _measurement = [CALayer layer]; _measurement.masksToBounds = YES;
+        _measurementReference = [CAShapeLayer layer]; _measurementReference.fillColor = NSColor.clearColor.CGColor;
+        _measurementReference.lineDashPattern = @[@5, @3];
+        _measurementLines = [CAShapeLayer layer]; _measurementLines.fillColor = NSColor.clearColor.CGColor;
+        [_measurement addSublayer:_measurementReference]; [_measurement addSublayer:_measurementLines];
+        for (NSUInteger i = 0; i < 4; i++) _measurementLabels[i] = measurementBadge(_measurement);
+        _measurementStatus = measurementBadge(_measurement);
+        _layoutOverlay = [CALayer layer];
+        _layoutBoxes = [CAShapeLayer layer]; [_layoutOverlay addSublayer:_layoutBoxes];
+        _layoutLines = [CAShapeLayer layer]; _layoutLines.fillColor = NSColor.clearColor.CGColor; [_layoutOverlay addSublayer:_layoutLines];
+        _layoutBadges = [CALayer layer]; [_layoutOverlay addSublayer:_layoutBadges];
+        [_measurement insertSublayer:_layoutOverlay below:_measurementStatus];
+        [self.layer insertSublayer:_measurement below:_dimensionPlate];
+    }
+    CGRect bounds = NSRectToCGRect(self.bounds);
+    CGFloat scale = self.window.backingScaleFactor ?: 1;
+    _measurement.frame = _measurementReference.frame = _measurementLines.frame = bounds;
+    CGColorRef accent = NSColor.keyboardFocusIndicatorColor.CGColor;
+    _measurementReference.strokeColor = _measurementLines.strokeColor = accent;
+    _measurementReference.lineWidth = _measurementLines.lineWidth = NSWorkspace.sharedWorkspace.accessibilityDisplayShouldIncreaseContrast ? 3 : 2;
+
+    CGRect reference = picker.measurementReference.count ? NSRectToCGRect([picker.measurementReference[0][@"frame"] rectValue]) : CGRectNull;
+    CGMutablePathRef referencePath = CGPathCreateMutable();
+    if (usableCaptureRect(reference)) {
+        CGPathAddRect(referencePath, NULL, [self measurementRectInView:reference]);
+    }
+    _measurementReference.path = referencePath; CGPathRelease(referencePath);
+
+    BOOL pointerHere = CGRectContainsPoint(bounds, [self measurementPointInView:picker.point]);
+    _measurementStatus.hidden = !pointerHere;
+    if (pointerHere) {
+        NSString *action = picker.measurementReference.count ? @"点击更换参照" : @"点击锁定参照";
+        if (!usableCaptureRect([picker measurementFrame])) action = picker.pending ? @"正在识别元素" : @"此处没有可识别元素";
+        NSString *hint = [action stringByAppendingString:@"  ·  ↑ 查看外层布局  ·  ↓ 返回内层  ·  Esc 退出"];
+        positionMeasurementBadge(_measurementStatus, hint, CGPointMake(CGRectGetMidX(bounds), CGRectGetMaxY(bounds) - 42), bounds, scale, NO);
+    }
+
+    CIIPMeasurementGuide guides[4];
+    NSUInteger count = _selectionClock ? 0 : [picker measurementGuides:guides];
+    _layoutOverlay.hidden = _selectionClock || count || !picker.measurementLayoutChildren.count;
+    if (!_layoutOverlay.hidden) [self drawMeasurementLayout:bounds scale:scale pointerHere:pointerHere];
+    CGMutablePathRef path = CGPathCreateMutable();
+    for (NSUInteger i = 0; i < 4; i++) {
+        _measurementLabels[i].hidden = YES;
+        if (i >= count) continue;
+        CGPoint start = [self measurementPointInView:guides[i].start], end = [self measurementPointInView:guides[i].end];
+        BOOL horizontal = start.y == end.y;
+        appendMeasurementGuide(path, start, end);
+        CGPoint center = CGPointMake((start.x + end.x) / 2, (start.y + end.y) / 2);
+        if (!CGRectContainsPoint(bounds, center)) {
+            if (!pointerHere) continue;
+            NSPoint screenPoint = NSMakePoint(center.x + NSMinX(self.window.frame), center.y + NSMinY(self.window.frame));
+            BOOL visibleOnOtherDisplay = NO;
+            for (NSPanel *panel in picker.panels) {
+                if (panel != self.window && NSPointInRect(screenPoint, panel.frame)) { visibleOnOtherDisplay = YES; break; }
+            }
+            if (visibleOnOtherDisplay) continue;
+        }
+        NSString *text = [NSString stringWithFormat:@"%@ pt", measurementNumber(hypot(end.x - start.x, end.y - start.y))];
+        CALayer *plate = _measurementLabels[i];
+        positionMeasurementBadge(plate, text, center, bounds, scale, NO);
+        CGFloat side = CGRectGetWidth(plate.bounds) / 2 + 6, rise = CGRectGetHeight(plate.bounds) / 2 + 6;
+        CGPoint positions[] = {CGPointMake(center.x, center.y + rise), CGPointMake(center.x, center.y - rise),
+            CGPointMake(center.x + side, center.y), CGPointMake(center.x - side, center.y)};
+        CGPoint best = plate.position;
+        NSUInteger fewestOverlaps = NSUIntegerMax;
+        for (NSUInteger attempt = 0; attempt < 4; attempt++) {
+            NSUInteger index = horizontal ? attempt : (attempt + 2) % 4;
+            plate.position = measurementBadgeCenter(positions[index], plate.bounds.size, bounds);
+            CGRect frame = CGRectInset(plate.frame, -2, -2);
+            NSUInteger overlaps = (!_dimensionPlate.hidden && CGRectIntersectsRect(frame, _dimensionPlate.frame)) +
+                (!_measurementStatus.hidden && CGRectIntersectsRect(frame, _measurementStatus.frame));
+            for (NSUInteger j = 0; j < i; j++)
+                overlaps += !_measurementLabels[j].hidden && CGRectIntersectsRect(frame, _measurementLabels[j].frame);
+            if (overlaps < fewestOverlaps) { best = plate.position; fewestOverlaps = overlaps; }
+            if (!overlaps) break;
+        }
+        plate.position = best;
+    }
+    _measurementLines.path = path; CGPathRelease(path);
+}
+- (void)drawSelectionRect:(CGRect)selected updateDecorations:(BOOL)updateDecorations {
     BOOL valid = usableCaptureRect(selected);
     [CATransaction begin]; [CATransaction setDisableActions:YES];
     CGMutablePathRef shade = CGPathCreateMutable(); CGPathAddRect(shade, NULL, NSRectToCGRect(self.bounds));
     CGMutablePathRef border = CGPathCreateMutable();
     if (valid) {
         CGPathAddRect(shade, NULL, selected);
-        CGFloat inset = MIN(1, MIN(selected.size.width, selected.size.height) / 4);
-        CGPathAddRect(border, NULL, CGRectInset(selected, inset, inset));
+        CGRect outline = selected;
+        if (self.picker.measurementMode && !_selectionClock) outline = [self measurementRectInView:[self.picker measurementFrame]];
+        CGFloat inset = MIN(1, MIN(outline.size.width, outline.size.height) / 4);
+        CGPathAddRect(border, NULL, CGRectInset(outline, inset, inset));
     }
     _shade.path = shade; _outline.path = border;
     CGPathRelease(shade); CGPathRelease(border);
-    _dimensionPlate.hidden = !self.picker.elementMode || !valid;
+    _dimensionPlate.hidden = !self.picker.elementMode || !valid ||
+        (self.picker.measurementMode && !NSPointInRect([self measurementPointInView:self.picker.point], self.bounds));
     if (valid) {
-        CGFloat x = MAX(76, MIN(CGRectGetMidX(selected), self.bounds.size.width - 76));
+        CGFloat margin = CGRectGetWidth(_dimensionPlate.bounds) / 2 + 4;
+        CGFloat x = MAX(margin, MIN(CGRectGetMidX(selected), self.bounds.size.width - margin));
         CGFloat y = CGRectGetMinY(selected) - 18;
-        if (y < 18) y = MIN(self.bounds.size.height - 18, CGRectGetMaxY(selected) + 18);
+        BOOL putAbove = NO;
+        if (self.picker.measurementMode && self.picker.measurementReference.count) {
+            CGRect reference = NSRectToCGRect([self.picker.measurementReference[0][@"frame"] rectValue]);
+            putAbove = CGRectGetMaxY([self.picker measurementFrame]) <= CGRectGetMinY(reference) && CGRectGetMaxY(selected) + 36 <= self.bounds.size.height;
+        }
+        if (putAbove || y < 18) y = MIN(self.bounds.size.height - 18, CGRectGetMaxY(selected) + 18);
         _dimensionPlate.position = CGPointMake(x, y);
     }
+    if (self.picker.measurementMode && (updateDecorations || !_selectionClock)) [self drawMeasurement];
     [CATransaction commit];
 }
 - (void)selectionTick:(id)sender {
@@ -383,7 +608,7 @@ static const NSTimeInterval captureAncestorDwell = .12;
     if (closeCaptureRects(_displayedSelection, to, .25)) {
         _displayedSelection = to; [self stopSelectionAnimation];
     }
-    [self drawSelectionRect:_displayedSelection];
+    [self drawSelectionRect:_displayedSelection updateDecorations:NO];
 }
 - (void)startSelectionAnimation {
     if (_selectionClock) return;
@@ -402,8 +627,8 @@ static const NSTimeInterval captureAncestorDwell = .12;
     CIIPCapturePicker *picker = self.picker;
     if (picker.elementMode && picker.pending && !usableCaptureRect(picker.rect) && _configured) return;
     CGRect selected = CGRectNull;
-    if (usableCaptureRect(picker.rect)) {
-        CGRect rect = picker.rect;
+    CGRect rect = picker.measurementMode ? [picker measurementFrame] : picker.rect;
+    if (usableCaptureRect(rect)) {
         selected = CGRectIntersection(NSRectToCGRect(self.bounds), CGRectMake(rect.origin.x - self.window.frame.origin.x,
             picker.desktopTop - CGRectGetMaxY(rect) - self.window.frame.origin.y, rect.size.width, rect.size.height));
     }
@@ -419,8 +644,16 @@ static const NSTimeInterval captureAncestorDwell = .12;
     _outline.lineWidth = NSWorkspace.sharedWorkspace.accessibilityDisplayShouldIncreaseContrast ? 3 : 2;
     _dimensionPlate.backgroundColor = NSColor.windowBackgroundColor.CGColor;
     _dimensions.contentsScale = self.window.backingScaleFactor ?: 1;
-    _dimensions.string = [[[NSAttributedString alloc] initWithString:captureSelectionDimensions(picker.rect, self.window.backingScaleFactor ?: 1)
+    NSString *dimensions = picker.measurementMode && usableCaptureRect(rect) ? measurementDimensions(rect) :
+        captureSelectionDimensions(rect, self.window.backingScaleFactor ?: 1);
+    NSAttributedString *dimensionText = [[[NSAttributedString alloc] initWithString:dimensions
         attributes:@{NSFontAttributeName:[NSFont monospacedDigitSystemFontOfSize:12 weight:NSFontWeightMedium], NSForegroundColorAttributeName:NSColor.labelColor}] autorelease];
+    _dimensions.string = dimensionText;
+    if (picker.measurementMode) {
+        CGFloat width = ceil(dimensionText.size.width) + 14;
+        _dimensionPlate.bounds = CGRectMake(0, 0, width, 26);
+        _dimensions.frame = CGRectMake(0, 4, width, 18);
+    }
     [CATransaction commit];
     _selectionRect = selected; _configured = YES;
     if (!follow) {
@@ -428,7 +661,7 @@ static const NSTimeInterval captureAncestorDwell = .12;
     } else if (!CGRectEqualToRect(_displayedSelection, selected)) {
         [self startSelectionAnimation];
     }
-    [self drawSelectionRect:_displayedSelection];
+    [self drawSelectionRect:_displayedSelection updateDecorations:YES];
 }
 @end
 
@@ -438,7 +671,8 @@ static const NSTimeInterval captureAncestorDwell = .12;
     return self;
 }
 - (void)dealloc {
-    [_targetWindow release]; [_elements release]; [_applications release]; [_ancestorProposal release]; [_appIcon release]; [_appName release]; [_panels release]; [_timer release];
+    [_targetWindow release]; [_elements release]; [_measurementReference release]; [_measurementLayoutTarget release];
+    [_measurementLayoutChildren release]; [_applications release]; [_ancestorProposal release]; [_appIcon release]; [_appName release]; [_panels release]; [_timer release];
     [super dealloc];
 }
 - (void)redraw { [self redrawAnimated:YES]; }
@@ -450,6 +684,7 @@ static const NSTimeInterval captureAncestorDwell = .12;
 - (void)updateSelectionAtPoint:(CGPoint)point {
     if (!self.trackingSelection || self.finished || !isfinite(point.x) || !isfinite(point.y)) return;
     self.dragPoint = point;
+    if (self.measurementMode) return;
     if (!self.draggingSelection && hypot(point.x - self.dragStart.x, point.y - self.dragStart.y) < 4) return;
     if (!self.draggingSelection) {
         self.draggingSelection = YES; self.pending = NO; self.elements = nil; self.elementIndex = 0;
@@ -473,6 +708,55 @@ static const NSTimeInterval captureAncestorDwell = .12;
     if (!self.pending && usableCaptureRect(self.rect) && CGRectContainsPoint(self.rect, self.dragPoint)) self.point = self.dragPoint;
     else if (self.pending && !self.querying) self.point = CGPointMake(INFINITY, INFINITY);
     [self confirm];
+}
+- (CGRect)measurementFrame {
+    if (!self.elements.count) return CGRectNull;
+    NSValue *frame = self.elements[self.elementIndex][@"frame"];
+    return frame ? NSRectToCGRect(frame.rectValue) : CGRectNull;
+}
+- (NSUInteger)measurementGuides:(CIIPMeasurementGuide *)guides {
+    CGRect frame = [self measurementFrame];
+    if (!self.measurementReference.count || !usableCaptureRect(frame)) return 0;
+    NSDictionary *reference = self.measurementReference[0], *current = self.elements[self.elementIndex];
+    if ([reference[@"element"] isEqual:current[@"element"]]) return 0;
+    BOOL nested = NO;
+    for (NSUInteger i = self.elementIndex + 1; i < self.elements.count && !nested; i++)
+        nested = [self.elements[i][@"element"] isEqual:reference[@"element"]];
+    for (NSUInteger i = 1; i < self.measurementReference.count && !nested; i++)
+        nested = [self.measurementReference[i][@"element"] isEqual:current[@"element"]];
+    return captureMeasurementGuides(NSRectToCGRect([reference[@"frame"] rectValue]), frame, nested, guides);
+}
+- (void)refreshMeasurementLayout {
+    if (self.pending) return;
+    CGRect frame = [self measurementFrame], clip;
+    if (!usableCaptureRect(frame) || !self.targetWindow ||
+        !CGRectMakeWithDictionaryRepresentation((CFDictionaryRef)self.targetWindow[(id)kCGWindowBounds], &clip)) {
+        self.measurementLayoutTarget = nil; self.measurementLayoutChildren = nil;
+        return;
+    }
+    NSDictionary *current = self.elements[self.elementIndex], *previous = self.measurementLayoutTarget;
+    if (!previous || ![current[@"element"] isEqual:previous[@"element"]] ||
+        !closeCaptureRects(frame, NSRectToCGRect([previous[@"frame"] rectValue]), .25) ||
+        !closeCaptureRects(self.rect, NSRectToCGRect([previous[@"rect"] rectValue]), .25)) {
+        self.measurementLayoutTarget = current;
+        self.measurementLayoutChildren = nil;
+    }
+    if (self.measurementLayoutChildren || self.measurementLayoutQuerying) return;
+    NSDictionary *target = self.measurementLayoutTarget, *window = self.targetWindow;
+    self.measurementLayoutQuerying = YES;
+    // Layout is supplementary. A slow AX children provider must never delay the pointer hit test.
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        @autoreleasepool {
+            NSArray *children = captureLayoutChildren((AXUIElementRef)target[@"element"], frame, clip);
+            dispatch_async(dispatch_get_main_queue(), ^{
+                self.measurementLayoutQuerying = NO;
+                if (self.finished) return;
+                if (target == self.measurementLayoutTarget && sameCaptureWindow(window, self.targetWindow))
+                    self.measurementLayoutChildren = children;
+                [self redraw];
+            });
+        }
+    });
 }
 - (void)clearAncestorProposal {
     self.ancestorProposal = nil; self.ancestorProposalSince = 0;
@@ -522,6 +806,22 @@ static const NSTimeInterval captureAncestorDwell = .12;
 - (void)redrawAnimated:(BOOL)animated {
     NSString *detail = self.elementMode ? (self.elements.count ? self.elements[self.elementIndex][@"label"] : self.pending ? @"正在识别元素" : @"此处没有可识别元素") : self.targetWindow[(id)kCGWindowName];
     NSString *label = [NSString stringWithFormat:@"%@，%@", self.appName ?: (self.elementMode ? @"选择屏幕元素" : @"选择应用窗口"), detail ?: @"移动指针选择目标"];
+    if (self.measurementMode) {
+        [self refreshMeasurementLayout];
+        CGRect frame = [self measurementFrame];
+        if (usableCaptureRect(frame)) {
+            label = [label stringByAppendingFormat:@"，宽 %@ pt，高 %@ pt", measurementNumber(frame.size.width), measurementNumber(frame.size.height)];
+            if (self.measurementLayoutChildren.count)
+                label = [label stringByAppendingFormat:@"，%lu 个可测量子元素", (unsigned long)self.measurementLayoutChildren.count];
+            CIIPMeasurementGuide guides[4];
+            NSUInteger count = [self measurementGuides:guides];
+            for (NSUInteger i = 0; i < count; i++) {
+                CGPoint start = guides[i].start, end = guides[i].end;
+                label = [label stringByAppendingFormat:@"，%@间距 %@ pt", start.y == end.y ? @"水平" : @"垂直",
+                    measurementNumber(hypot(end.x - start.x, end.y - start.y))];
+            }
+        } else label = self.pending ? @"正在识别元素" : @"此处没有可识别元素";
+    }
     for (NSPanel *panel in self.panels) {
         [panel.contentView setAccessibilityLabel:label];
         [(CIIPCaptureSelectionView *)panel.contentView updateSelectionAnimated:animated];
@@ -617,6 +917,7 @@ static const NSTimeInterval captureAncestorDwell = .12;
     });
 }
 - (void)confirm {
+    if (self.finished) return;
     [self sample];
     if (self.pending || !usableCaptureRect(self.rect)) { NSBeep(); return; }
     // A closed or moved target must be selected again, never captured using stale bounds.
@@ -628,7 +929,11 @@ static const NSTimeInterval captureAncestorDwell = .12;
         ![window[(id)kCGWindowBounds] isEqual:self.targetWindow[(id)kCGWindowBounds]]) {
         self.point = CGPointMake(INFINITY, INFINITY); [self sample]; return;
     }
-    [self finish:YES];
+    if (self.measurementMode) {
+        if (!usableCaptureRect([self measurementFrame])) { NSBeep(); return; }
+        self.measurementReference = [self.elements subarrayWithRange:NSMakeRange(self.elementIndex, self.elements.count - self.elementIndex)];
+        [self redrawAnimated:NO];
+    } else [self finish:YES];
 }
 - (void)keyDown:(NSEvent *)event {
     if (event.keyCode == 53) { [self finish:NO]; return; }
@@ -654,6 +959,7 @@ static const NSTimeInterval captureAncestorDwell = .12;
         [panel close];
     }
     [self.panels removeAllObjects];
+    accepted = accepted && !self.measurementMode;
     CGRect rect = accepted ? self.rect : CGRectZero;
     ciip_go_capture_selection(self.token, accepted ? [self.targetWindow[(id)kCGWindowNumber] unsignedIntValue] : 0,
         rect.origin.x, rect.origin.y, rect.size.width, rect.size.height);
@@ -666,10 +972,10 @@ int ciip_element_permission(void) {
     return AXIsProcessTrustedWithOptions((CFDictionaryRef)@{(id)kAXTrustedCheckOptionPrompt:@YES});
 }
 
-int ciip_start_capture_selection(uintptr_t token, int element, double duration) {
+int ciip_start_capture_selection(uintptr_t token, int mode, double duration) {
     if (activeCapturePicker || !NSScreen.screens.count) return 0;
     CIIPCapturePicker *picker = [[CIIPCapturePicker alloc] init];
-    activeCapturePicker = picker; picker.token = token; picker.elementMode = element != 0;
+    activeCapturePicker = picker; picker.token = token; picker.elementMode = mode != 0; picker.measurementMode = mode == 2;
     picker.selectionDuration = duration;
     picker.desktopTop = NSMaxY([NSScreen.screens[0] frame]);
     for (NSScreen *screen in NSScreen.screens) {
@@ -677,12 +983,13 @@ int ciip_start_capture_selection(uintptr_t token, int element, double duration) 
         panel.releasedWhenClosed = NO; panel.opaque = NO; panel.backgroundColor = NSColor.clearColor;
         panel.hasShadow = NO; panel.hidesOnDeactivate = NO; panel.level = NSScreenSaverWindowLevel;
         panel.acceptsMouseMovedEvents = YES;
-        panel.title = picker.elementMode ? @"元素截图" : @"窗口截图";
+        panel.title = picker.measurementMode ? @"元素测量" : picker.elementMode ? @"元素截图" : @"窗口截图";
         panel.collectionBehavior = NSWindowCollectionBehaviorCanJoinAllSpaces | NSWindowCollectionBehaviorFullScreenAuxiliary;
         CIIPCaptureSelectionView *view = [[[CIIPCaptureSelectionView alloc] initWithFrame:NSMakeRect(0, 0, screen.frame.size.width, screen.frame.size.height)] autorelease];
         view.picker = picker; panel.contentView = view;
         [view setAccessibilityElement:YES]; [view setAccessibilityRole:NSAccessibilityGroupRole];
-        [view setAccessibilityHelp:picker.elementMode ? @"点击或回车截图，拖动框选区域，方向键上下选择元素层级，Esc 取消" : @"点击或回车截图，Esc 取消"];
+        [view setAccessibilityHelp:picker.measurementMode ? @"悬停查看元素和子元素布局，方向键上下选择层级，点击或回车锁定对比参照，Esc 退出" :
+            picker.elementMode ? @"点击或回车截图，拖动框选区域，方向键上下选择元素层级，Esc 取消" : @"点击或回车截图，Esc 取消"];
         [panel makeFirstResponder:view]; [picker.panels addObject:panel];
         [panel orderFrontRegardless];
         if (NSPointInRect(NSEvent.mouseLocation, screen.frame)) [panel makeKeyWindow];

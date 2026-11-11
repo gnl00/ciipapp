@@ -73,6 +73,7 @@ static CFArrayRef fixtureWindowList(CGWindowListOption option, CGWindowID window
 #define CGWindowListCopyWindowInfo fixtureWindowList
 #define NSBeep fixtureBeep
 #include "../capture_selection_darwin.m"
+#include "../capture_measurement_darwin.h"
 #undef AXUIElementCreateApplication
 
 void ciip_go_capture_selection(uintptr_t token, uint32_t window, double x, double y, double w, double h) {
@@ -470,8 +471,80 @@ static void testCaptureSelectionRefresh(NSDictionary *window, NSString *director
     method_setImplementation(mouseLocation, originalMouseLocation);
     puts("PASS stable refresh: micro-movement, parent selection, slow AX, latest pointer, stale window, empty target, pending confirmation, window capture");
 }
+static void assertGuide(CIIPMeasurementGuide guide, CGFloat x1, CGFloat y1, CGFloat x2, CGFloat y2) {
+    assert(CGPointEqualToPoint(guide.start, CGPointMake(x1, y1)));
+    assert(CGPointEqualToPoint(guide.end, CGPointMake(x2, y2)));
+}
+static void testCaptureMeasurementGuides(void) {
+    CIIPMeasurementGuide guides[4];
+    CGRect reference = CGRectMake(-160, 120, 40, 24);
+    CGRect right = CGRectMake(-104, 130, 30, 20);
+    assert(captureMeasurementGuides(reference, right, NO, guides) == 1);
+    assertGuide(guides[0], -120, 137, -104, 137);
+    assert(captureMeasurementGuides(right, reference, NO, guides) == 1);
+    assertGuide(guides[0], -104, 137, -120, 137);
+
+    CGRect above = CGRectMake(-140, 90, 40, 20);
+    assert(captureMeasurementGuides(reference, above, NO, guides) == 1);
+    assertGuide(guides[0], -130, 120, -130, 110);
+
+    CGRect diagonal = CGRectMake(-104.5, 150, 30, 20);
+    assert(captureMeasurementGuides(reference, diagonal, NO, guides) == 2);
+    assertGuide(guides[0], -120, 144, -104.5, 144);
+    assertGuide(guides[1], -104.5, 144, -104.5, 150);
+    assert(captureMeasurementGuides(diagonal, reference, NO, guides) == 2);
+    assertGuide(guides[0], -104.5, 150, -120, 150);
+    assertGuide(guides[1], -120, 150, -120, 144);
+
+    CGRect parent = CGRectMake(-180, 110, 100, 80);
+    for (NSUInteger reverse = 0; reverse < 2; reverse++) {
+        assert(captureMeasurementGuides(reverse ? reference : parent, reverse ? parent : reference, YES, guides) == 4);
+        assertGuide(guides[0], -180, 132, -160, 132);
+        assertGuide(guides[1], -80, 132, -120, 132);
+        assertGuide(guides[2], -140, 110, -140, 120);
+        assertGuide(guides[3], -140, 190, -140, 144);
+    }
+    assert(captureMeasurementGuides(parent, CGRectMake(-180, 110, 40, 24), YES, guides) == 2);
+    assertGuide(guides[0], -80, 122, -140, 122);
+    assertGuide(guides[1], -160, 190, -160, 134);
+    assert(captureMeasurementGuides(parent, reference, NO, guides) == 0);
+    assert(captureMeasurementGuides(reference, reference, YES, guides) == 0);
+    assert(captureMeasurementGuides(reference, CGRectMake(-120, 120, 40, 24), NO, guides) == 0);
+    assert(captureMeasurementGuides(reference, CGRectMake(-130, 130, 40, 24), NO, guides) == 0);
+    assert(captureMeasurementGuides(reference, CGRectNull, NO, guides) == 0);
+}
+static void testCaptureLayoutGuides(void) {
+    CGRect container = CGRectMake(-100, -20, 160, 100);
+    CGRect children[] = {
+        CGRectMake(-90, -10, 30, 20), CGRectMake(-48, -10, 30, 20), CGRectMake(-5, -10, 30, 20),
+        CGRectMake(-90, 26, 30, 20), CGRectMake(-90, -10, 30, 20), CGRectMake(-110, -10, 15, 20), CGRectNull,
+    };
+    CIIPMeasurementGuide guides[12];
+    assert(captureLayoutGuides(container, children, 7, guides, 12) == 7);
+    assertGuide(guides[0], -100, 0, -90, 0);
+    assertGuide(guides[1], 60, 0, 25, 0);
+    assertGuide(guides[2], -75, -20, -75, -10);
+    assertGuide(guides[3], -75, 80, -75, 46);
+    assertGuide(guides[4], -60, 0, -48, 0);
+    assertGuide(guides[5], -75, 10, -75, 26);
+    assertGuide(guides[6], -18, 0, -5, 0);
+    assert(captureLayoutGuides(container, children, 7, guides, 2) == 2);
+    assert(captureLayoutGuides(container, children, 7, NULL, 0) == 0);
+    assert(captureLayoutGuides(container, children + 5, 2, guides, 12) == 0);
+
+    container = CGRectMake(0, 0, 200, 120);
+    CGRect blocked[] = {
+        CGRectMake(10, 10, 30, 20), CGRectMake(35, 10, 20, 20), CGRectMake(65, 10, 30, 20),
+        CGRectMake(65, 30, 30, 20), CGRectMake(65, 65, 30, 20), CGRectMake(110, 90, 10, 10),
+    };
+    assert(captureLayoutGuides(container, blocked, 6, guides, 12) == 6);
+    assertGuide(guides[4], 55, 20, 65, 20);
+    assertGuide(guides[5], 80, 50, 80, 65);
+}
 int main(int argc, const char **argv) {
     @autoreleasepool {
+        testCaptureMeasurementGuides();
+        testCaptureLayoutGuides();
         [NSApplication sharedApplication];
         leaf = AXUIElementCreateApplication(1111); duplicate = AXUIElementCreateApplication(2222); parent = AXUIElementCreateApplication(3333); root = AXUIElementCreateApplication(4444); sibling = AXUIElementCreateApplication(5555);
         CGRect target = CGRectMake(-200, 100, 200, 140);

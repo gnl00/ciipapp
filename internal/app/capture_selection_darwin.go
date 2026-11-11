@@ -7,7 +7,7 @@ package app
 #cgo CFLAGS: -fblocks
 #include <stdint.h>
 int ciip_element_permission(void);
-int ciip_start_capture_selection(uintptr_t token, int element, double duration);
+int ciip_start_capture_selection(uintptr_t token, int mode, double duration);
 void ciip_cancel_capture_selection(uintptr_t token);
 */
 import "C"
@@ -54,13 +54,19 @@ func selectNativeCapture(ctx context.Context, mode string) (*captureSelection, e
 	defer captureSelectionCallbacks.Delete(token)
 	var started bool
 	mygo.RunOnMain(func() {
-		var element C.int
-		if mode == "element" {
-			element = 1
+		var nativeMode C.int
+		switch mode {
+		case "element":
+			nativeMode = 1
+		case "measure":
+			nativeMode = 2
 		}
-		started = C.ciip_start_capture_selection(C.uintptr_t(token), element, C.double(duration)) != 0
+		started = C.ciip_start_capture_selection(C.uintptr_t(token), nativeMode, C.double(duration)) != 0
 	})
 	if !started {
+		if mode == "measure" {
+			return nil, errors.New("无法打开元素测量")
+		}
 		return nil, errors.New("无法打开截图选择器")
 	}
 	defer mygo.RunOnMain(func() { C.ciip_cancel_capture_selection(C.uintptr_t(token)) })

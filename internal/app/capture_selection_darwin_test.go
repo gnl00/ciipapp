@@ -3,6 +3,8 @@
 package app
 
 import (
+	"context"
+	"errors"
 	"os/exec"
 	"path/filepath"
 	"strconv"
@@ -10,6 +12,15 @@ import (
 
 	"ciip/frontend"
 )
+
+func TestElementMeasurementSharesCaptureLock(t *testing.T) {
+	var service CaptureService
+	service.captureMu.Lock()
+	defer service.captureMu.Unlock()
+	if err := service.measureElements(context.Background()); !errors.Is(err, errScreenActionBusy) {
+		t.Fatalf("element measurement while capture is busy: %v", err)
+	}
+}
 
 func TestNativeCaptureSelection(t *testing.T) {
 	binary := filepath.Join(t.TempDir(), "capture-selection")

@@ -26,6 +26,8 @@ import (
 const maxImageBytes = 64 << 20
 const maxImagePixels = 60_000_000
 
+var errScreenActionBusy = errors.New("已有截图或测量正在进行，请先完成或按 Esc 取消")
+
 type ImageData struct {
 	DataURL string `json:"dataURL"`
 	Width   int    `json:"width"`
@@ -87,7 +89,7 @@ func (s *CaptureService) Capture(ctx context.Context, mode string) (*ImageData, 
 		}
 	}
 	if !s.captureMu.TryLock() {
-		return nil, errors.New("已有截图正在进行，请先完成或按 Esc 取消")
+		return nil, errScreenActionBusy
 	}
 	defer s.captureMu.Unlock()
 	if s.hasQuickEditor() {
@@ -174,6 +176,21 @@ func (s *CaptureService) Capture(ctx context.Context, mode string) (*ImageData, 
 	}
 	succeeded = true
 	return img, nil
+}
+
+func (s *CaptureService) measureElements(ctx context.Context) error {
+	if runtime.GOOS != "darwin" {
+		return errors.New("元素测量仅支持 macOS")
+	}
+	if !s.captureMu.TryLock() {
+		return errScreenActionBusy
+	}
+	defer s.captureMu.Unlock()
+	if !nativeElementPermission() {
+		return errors.New("元素测量需要辅助功能权限，请在系统设置 → 隐私与安全性 → 辅助功能中允许 ciip 后重试")
+	}
+	_, err := selectNativeCapture(ctx, "measure")
+	return err
 }
 
 // Interactive area/full-screen capture and older-system fallback keep the system
