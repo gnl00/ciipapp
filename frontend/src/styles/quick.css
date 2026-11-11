@@ -45,9 +45,7 @@ body.quick-mode{display:block;background:transparent}
 .quick-mode .properties .colors{gap:4px}
 .quick-mode .properties .stroke-label{gap:7px}
 .quick-mode .properties .stroke-label input{width:58px}
-.quick-mode .quick-full{width:32px;height:32px;flex:none;padding:7px;color:var(--on-accent);background:var(--accent-fill);border-radius:7px;display:flex;align-items:center;justify-content:center}
-.quick-mode .quick-full:not(:disabled):hover{background:var(--accent-hover)}
-.quick-mode .quick-full:not(:disabled):active{background:var(--accent-active)}
+.quick-mode :is(.quick-full,.quick-finish){width:32px;height:32px;flex:none;padding:7px;color:var(--ink);border-radius:var(--radius-control);display:flex;align-items:center;justify-content:center}
 .quick-mode .quick-close{position:fixed;z-index:26;width:26px;height:26px;min-width:26px;padding:0;display:flex;align-items:center;justify-content:center;color:var(--close-ink);border:1px solid var(--close-border);border-radius:var(--radius-round);background:var(--close-bg);box-shadow:var(--close-shadow);backdrop-filter:var(--close-filter);-webkit-backdrop-filter:var(--close-filter);--app-region:no-drag}
 .quick-mode .quick-close svg{width:var(--icon-sm);height:var(--icon-sm);stroke-width:1.65}
 .quick-mode .quick-close:focus-visible{outline:1.5px solid var(--selection-strong);outline-offset:-3px}

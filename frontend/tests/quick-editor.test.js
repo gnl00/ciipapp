@@ -12,7 +12,7 @@ const source=readTypeScript(process.env.CIIP_QUICK_SOURCE||new URL('../src/quick
 function fixture(image={dataURL:'fixture',width:1280,height:720},placement={panel:{width:664,height:500},image:{x:12,y:28,width:640,height:360},scale:.5,original:true},manualFrames=false,hooks={}) {
  const listeners={},nodes=[],calls=[],observers=[],frames=[],notifications=[];
  let finishes=0,serializations=0;
- const node=()=>{const n={dataset:{},attributes:{},hasPointerCapture(){return false;},setPointerCapture(){},releasePointerCapture(){},style:{setProperty(key,value){this[key]=value;}},events:{},children:[],hidden:true,clientWidth:640,scrollWidth:640,scrollLeft:0,offsetWidth:640,offsetHeight:84,classList:{add(){},remove(){},toggle(){}},setAttribute(key,value){this.attributes[key]=value;},before(){},append(...children){this.children.push(...children);for(const child of children)child.parentElement=this;},addEventListener(type,fn){this.events[type]=fn;},removeEventListener(type){delete this.events[type];},querySelector(){return {remove(){}};},getBoundingClientRect(){return {left:0,right:this.clientWidth};},click(event={detail:1}){if(!this.disabled)return this.onclick?.(event);}};nodes.push(n);return n;};
+ const node=()=>{const n={dataset:{},attributes:{},hasPointerCapture(){return false;},setPointerCapture(){},releasePointerCapture(){},style:{setProperty(key,value){this[key]=value;}},events:{},children:[],hidden:true,clientWidth:640,scrollWidth:640,scrollLeft:0,offsetWidth:640,offsetHeight:84,classList:{add(){},remove(){},toggle(){}},setAttribute(key,value){this.attributes[key]=value;},before(){},prepend(...children){this.children.unshift(...children);for(const child of children)child.parentElement=this;},append(...children){this.children.push(...children);for(const child of children)child.parentElement=this;},addEventListener(type,fn){this.events[type]=fn;},removeEventListener(type){delete this.events[type];},querySelector(){return {remove(){}};},getBoundingClientRect(){return {left:0,right:this.clientWidth};},click(event={detail:1}){if(!this.disabled)return this.onclick?.(event);}};nodes.push(n);return n;};
  const toolbar=node(),properties=node(),copy=node(),wrap=node(),busy=node(),canvas=node(),tools=node();
  let toolsWidth=640;
  Object.defineProperty(tools,'clientWidth',{get(){return toolsWidth-(tools.parentElement?.children.filter(child=>child!==tools&&!child.hidden).length||0)*20;}});
@@ -34,6 +34,7 @@ const baseLayout={crop:{x:0,y:0},offsetX:0,offsetY:0,width:1280,height:720};
 const settle=()=>new Promise(setImmediate);
 const exits={
  finish:h=>h.editor.finish(),
+ done:h=>h.nodes.find(node=>node.className==='quick-finish').click(),
  close:h=>h.nodes.find(node=>node.className==='quick-close').click(),
  doubleClick:h=>h.canvas.events.dblclick({preventDefault(){}}),
  doublePress:h=>{for(const timeStamp of [100,750])h.editor.moveCanvas({button:0,pointerId:1,currentTarget:h.canvas,timeStamp,screenX:400,screenY:300,preventDefault(){},stopPropagation(){}});},
@@ -173,9 +174,11 @@ test('a second click after moving the window cannot close the editor',async()=>{
  assert.equal(h.calls.filter(call=>call.method==='CloseQuick').length,0);
 });
 
-test('copy is icon only and close sits inside the screenshot top-right outside the toolbar',async()=>{
+test('editor and finish flank the toolbar, with the close button inside the screenshot',async()=>{
  const h=fixture();await h.editor.start();h.editor.position(baseLayout,.5);
  const close=h.nodes.find(node=>node.className==='quick-close');
+ assert.equal(h.toolbar.children[0].className,'quick-full');
+ assert.equal(h.toolbar.children.at(-1).className,'quick-finish');
  assert.equal(h.labelRemoved,true);assert.ok(h.body.children.includes(close));assert.ok(!h.toolbar.children.includes(close));
  assert.equal(close.style.left,'618px');assert.equal(close.style.top,'36px');
  h.closable=false;h.canvas.events.dblclick({preventDefault(){assert.fail('annotation text must keep double-click editing');}});

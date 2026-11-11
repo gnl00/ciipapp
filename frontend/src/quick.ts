@@ -47,15 +47,17 @@ export function createQuickEditor({call,loadCapture,finishEditing,serialize,noti
  toolbar.before(panel);panel.append(toolbar,properties);
  const toolScroll=createQuickToolScroll(document.querySelector<HTMLElement>('#tools')!);
  const grip=document.createElement('div');grip.className='quick-window-grip';grip.title='拖动移动截图窗口 · 拖动窗口边缘缩放';grip.setAttribute('aria-label','移动截图窗口');document.body.append(grip);
- const full=document.createElement('button');full.className='quick-full';full.title='在完整编辑器中继续';full.setAttribute('aria-label','完整编辑器');full.innerHTML=glyph('M9 3H4a1 1 0 0 0-1 1v16a1 1 0 0 0 1 1h16a1 1 0 0 0 1-1v-5M13 3h8v8M21 3 11 13');toolbar.append(full);
+ const full=document.createElement('button');full.className='quick-full';full.title='在完整编辑器中继续';full.setAttribute('aria-label','打开编辑器');full.innerHTML=glyph('M9 3H4a1 1 0 0 0-1 1v16a1 1 0 0 0 1 1h16a1 1 0 0 0 1-1v-5M13 3h8v8M21 3 11 13');toolbar.prepend(full);
+ const done=document.createElement('button');done.className='quick-finish';done.title='完成快捷编辑 Esc';done.setAttribute('aria-label','完成快捷编辑');done.innerHTML=glyph('m5 12 4 4L19 6');toolbar.append(done);
  const close=document.createElement('button');close.className='quick-close';close.title='结束快捷编辑 Esc · 双击图片空白处也可关闭';close.setAttribute('aria-label','结束快捷编辑');close.innerHTML='<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 6 8 8M14 6l-8 8"/></svg>';document.body.append(close);
  const copy=document.querySelector<HTMLButtonElement>('#copy')!;copy.title='复制当前编辑并完成 ⌘C';copy.querySelector('span:last-child')?.remove();
  const resizeFrame=document.createElement('div');resizeFrame.className='quick-resize-frame';resizeFrame.setAttribute('aria-label','截图窗口边框');
  const edges={n:'上边',e:'右边',s:'下边',w:'左边',nw:'左上角',ne:'右上角',se:'右下角',sw:'左下角'};
  for(const [edge,label]of Object.entries(edges)){const handle=document.createElement('button');handle.dataset.edge=edge;handle.setAttribute('aria-label',`拖动${label}缩放截图窗口`);handle.title=`拖动${label}缩放窗口 · 方向键微调`;resizeFrame.append(handle);}document.body.append(resizeFrame);
  let capture:QuickCapture|null=null,canvasRect:ScreenRect|null=null,ending=false,lastPress:{time:number;x:number;y:number}|null=null,windowPointer:{id:number;target:HTMLElement;ended?:boolean}|null=null,annotationGesture=false;
+ const setInteracting=(active:boolean)=>{panel.classList.toggle('is-editing',active);close.disabled=done.disabled=active;};
  const windowGesture=createQuickWindowGesture({getBounds:()=>call('GetQuickBounds'),transform:(initial:ScreenRect,edge:string,dx:number,dy:number)=>call('TransformQuickWindow',initial,edge,dx,dy),onError:(error:unknown)=>notify(errorMessage(error),true),onState:(active:boolean)=>{
-  panel.classList.toggle('is-editing',active||annotationGesture);close.disabled=active||annotationGesture;
+  setInteracting(active||annotationGesture);
   if(!active&&windowPointer){const current=windowPointer;windowPointer=null;if(current.target.hasPointerCapture(current.id))current.target.releasePointerCapture(current.id);}
  }});
  const viewport=()=>({width:innerWidth,height:innerHeight});
@@ -85,7 +87,7 @@ export function createQuickEditor({call,loadCapture,finishEditing,serialize,noti
  async function finish(){if(ending)return;ending=true;windowGesture.cancel();try{await finishEditing();await call('CloseQuick');}catch(error){ending=false;notify(errorMessage(error),true);}}
  full.onclick=async()=>{if(blocked()||windowGesture.active)return;ending=true;try{await finishEditing();await call('OpenQuickInEditor',serialize());}catch(error){ending=false;notify(errorMessage(error),true);}};
  window.addEventListener('ciip:quick-open-editor',()=>full.click());
- close.onclick=()=>{if(blocked())return;void finish();};
+ close.onclick=done.onclick=()=>{if(blocked())return;void finish();};
  window.addEventListener('ciip:quick-transfer-cancelled',()=>{ending=false;});
  window.addEventListener('blur',()=>{lastPress=null;resetMove();windowGesture.cancel();});
  window.addEventListener('pointermove',event=>{if(event.pointerId===windowPointer?.id)windowGesture.update({x:event.screenX,y:event.screenY});});
@@ -131,7 +133,7 @@ export function createQuickEditor({call,loadCapture,finishEditing,serialize,noti
    if(previous&&press.time>=previous.time&&press.time-previous.time<(capture?.doubleClickMS||500)&&Math.hypot(press.x-previous.x,press.y-previous.y)<=4){event.preventDefault();lastPress=null;void finish();return true;}
    const started=beginWindowGesture(event,'move');if(started)canvas.classList.add('is-window-moving');return started;
   },
-  interacting(value:boolean){annotationGesture=value;panel.classList.toggle('is-editing',value||windowGesture.active);close.disabled=value||windowGesture.active;},
+  interacting(value:boolean){annotationGesture=value;setInteracting(value||windowGesture.active);},
   finish,
  };
 }
