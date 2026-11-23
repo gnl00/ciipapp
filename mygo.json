@@ -2,7 +2,7 @@
   "name": "ciip",
   "slug": "ciip",
   "identifier": "dev.ciip.app",
-  "version": "0.13.0",
+  "version": "0.14.0",
   "out": "build",
   "icon": "resources/icon.png",
   "macos": {

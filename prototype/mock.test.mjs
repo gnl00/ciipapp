@@ -17,12 +17,12 @@ function pngHeader(width, height) {
   data.writeUInt32BE(height, 20);
   return 'data:image/png;base64,' + data.toString('base64');
 }
-function createBridge(parent = {}) {
+function createBridge(parent = {}, search = '') {
   const messages = [];
   parent.postMessage = data => messages.push(data);
   const window = {parent, addEventListener() {}};
   const context = {
-    window, location:{origin}, innerWidth:1120, innerHeight:760, structuredClone, atob,
+    window, location:{origin,search}, innerWidth:1120, innerHeight:760, structuredClone, atob, URLSearchParams,
     document:{createElement() {return {getContext:() => ({fillRect() {}, fillText() {}}), toDataURL:() => pngHeader(1280, 720)};}},
   };
   vm.runInNewContext(mockSource, context);
@@ -65,6 +65,16 @@ test('copy and save receipts report PNG source dimensions rather than viewport d
   assert.equal(messages[0].result.height, 4000);
   assert.equal(await call('CaptureService.SaveImage', pngHeader(800, 500)), 'memory://ciip-preview.png');
   assert.equal(messages[1].result.width, 800);
+});
+
+test('the selection toolbar preview copies directly and closes without loading a quick document', async () => {
+  const {call,messages}=createBridge({},'?mode=quick&selection=1');
+  const capture=assert.rejects(call('CaptureService.GetQuickCapture'),/已关闭/);
+  await call('CaptureService.SubmitQuickSelection','copy');
+  await capture;
+  assert.deepEqual(messages.map(message=>message.type),['export-result','quick-closed']);
+  assert.equal(messages[0].result.width,1280);
+  await assert.rejects(call('CaptureService.SubmitQuickSelection','capture'),/不可用/);
 });
 test('pin receipts retain the editable annotation count and return distinct memory IDs', async () => {
   const {call, messages} = createBridge();

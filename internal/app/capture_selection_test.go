@@ -15,10 +15,12 @@ func TestCaptureSelectionArguments(t *testing.T) {
 	if err != nil || !reflect.DeepEqual(args, []string{"-l", "42", "-o"}) {
 		t.Fatalf("window args = %v, %v", args, err)
 	}
-	element := &captureSelection{Rect: ScreenRect{-1920.25, -900.5, 120.5, 42.25}}
-	args, err = element.arguments("element")
-	if err != nil || !reflect.DeepEqual(args, []string{"-R", "-1921,-901,122,43"}) || element.Rect != (ScreenRect{-1921, -901, 122, 43}) {
-		t.Fatalf("element args = %v, rect = %+v, error = %v", args, element.Rect, err)
+	for _, mode := range []string{"area", "element"} {
+		selection := &captureSelection{Rect: ScreenRect{-1920.25, -900.5, 120.5, 42.25}}
+		args, err := selection.arguments(mode)
+		if err != nil || !reflect.DeepEqual(args, []string{"-R", "-1921,-901,122,43"}) || selection.Rect != (ScreenRect{-1921, -901, 122, 43}) {
+			t.Fatalf("%s args = %v, rect = %+v, error = %v", mode, args, selection.Rect, err)
+		}
 	}
 	for _, selection := range []*captureSelection{nil, {}, {Rect: ScreenRect{0, 0, math.NaN(), 1}}, {Rect: ScreenRect{0, 0, 1, -1}}} {
 		if _, err := selection.arguments("element"); err == nil {

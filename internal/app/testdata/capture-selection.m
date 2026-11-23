@@ -73,10 +73,14 @@ static CFArrayRef fixtureWindowList(CGWindowListOption option, CGWindowID window
 #define CGWindowListCopyWindowInfo fixtureWindowList
 #define NSBeep fixtureBeep
 #include "../capture_selection_darwin.m"
+#include "../capture_adjustment_darwin.h"
 #include "../capture_measurement_darwin.h"
 #undef AXUIElementCreateApplication
 
-void ciip_go_capture_selection(uintptr_t token, uint32_t window, double x, double y, double w, double h) {
+void ciip_go_capture_area_image(uintptr_t token, double x, double y, double width, double height, int copyOnly,
+    const void *png, size_t length, const char *error) {}
+
+void ciip_go_capture_selection(uintptr_t token, uint32_t window, double x, double y, double w, double h, int copyOnly) {
     callbackCount++; callbackWindow = window; callbackRect = CGRectMake(x, y, w, h);
 }
 static NSDictionary *windowInfo(pid_t pid, uint32_t number, CGRect rect, double alpha) {
@@ -263,7 +267,7 @@ static void testCaptureAncestorDwell(NSDictionary *window, NSString *directory) 
     hitGroup = NO; fixtureMouse.y = 838; [picker sample]; drainUntil(^BOOL { return !picker.querying; });
     assert(!picker.pending && CGRectEqualToRect(picker.rect, (CGRect){leafOrigin, {40, 24}})); // Shrinking is immediate.
 
-    // Return/click cannot capture an ancestor that has not been displayed. Up explicitly reveals it.
+    // Return/click cannot lock an ancestor that has not been displayed. Up explicitly reveals it.
     hitGroup = YES; fixtureMouse.y = 821; [picker sample]; drainUntil(^BOOL { return !picker.querying; });
     NSUInteger callbacks = callbackCount, beeps = beepCount;
     [picker keyDown:key(36)]; assert(callbackCount == callbacks && beepCount == beeps + 1 && picker.pending);
@@ -306,6 +310,12 @@ static void testCaptureAncestorDwell(NSDictionary *window, NSString *directory) 
     dispatch_release(hitGate); dispatch_release(hitEntered); hitGate = hitEntered = nil;
     drainUntil(^BOOL { return !picker.pending && !picker.querying; });
     assert(CGRectEqualToRect(picker.rect, containerRect));
+    NSPanel *selectionPanel = [[CIIPCaptureSelectionPanel alloc] initWithContentRect:NSMakeRect(-240, 720, 300, 200) styleMask:NSWindowStyleMaskBorderless backing:NSBackingStoreBuffered defer:NO];
+    selectionPanel.releasedWhenClosed = NO;
+    CIIPCaptureSelectionView *selectionView = [[[CIIPCaptureSelectionView alloc] initWithFrame:NSMakeRect(0, 0, 300, 200)] autorelease];
+    selectionView.picker = picker; selectionPanel.contentView = selectionView;
+    [picker.panels addObject:selectionPanel]; [selectionPanel release];
+    [picker keyDown:key(36)]; assert(picker.adjusting && callbackCount == callbacks && CGRectEqualToRect(picker.rect, containerRect));
     [picker keyDown:key(36)]; assert(callbackCount == callbacks + 1 && CGRectEqualToRect(callbackRect, containerRect));
 
     // Cancel clears the proposal; its delayed callback must not issue another AX request.
@@ -541,8 +551,41 @@ static void testCaptureLayoutGuides(void) {
     assertGuide(guides[4], 55, 20, 65, 20);
     assertGuide(guides[5], 80, 50, 80, 65);
 }
+static void testCaptureAdjustmentGeometry(void) {
+    CGRect bounds = CGRectMake(-400, -200, 1200, 900);
+    CGRect initial = CGRectMake(-100, -50, 150, 120);
+    assert(captureAdjustmentEdge(initial, CGPointMake(-102, -52), 5) == (CIIPCaptureEdgeLeft | CIIPCaptureEdgeTop));
+    assert(captureAdjustmentEdge(initial, CGPointMake(52, 72), 5) == (CIIPCaptureEdgeRight | CIIPCaptureEdgeBottom));
+    assert(captureAdjustmentEdge(initial, CGPointMake(-25, 70), 5) == CIIPCaptureEdgeBottom);
+    assert(captureAdjustmentEdge(initial, CGPointMake(-100, 10), 5) == CIIPCaptureEdgeLeft);
+    assert(captureAdjustmentEdge(initial, CGPointMake(-25, 10), 5) == CIIPCaptureEdgeNone);
+    assert(captureAdjustmentEdge(initial, CGPointMake(-102, 80), 5) == CIIPCaptureEdgeNone);
+    CGRect tiny = CGRectMake(0, 0, 3, 3);
+    assert(captureAdjustmentEdge(tiny, CGPointMake(1.5, 1.5), 5) == CIIPCaptureEdgeNone);
+    assert(captureAdjustmentEdge(tiny, CGPointMake(3, 3), 5) == (CIIPCaptureEdgeRight | CIIPCaptureEdgeBottom));
+    assert(captureAdjustmentEdge(tiny, CGPointMake(4, 4), 5) == (CIIPCaptureEdgeRight | CIIPCaptureEdgeBottom));
+
+    CGPoint start = CGPointMake(0, 0);
+    CGRect moved = captureAdjustedRect(initial, start, CGPointMake(140, -40), bounds, CIIPCaptureEdgeNone);
+    assert(CGRectEqualToRect(moved, CGRectMake(40, -90, 150, 120)));
+    moved = captureAdjustedRect(initial, start, CGPointMake(-900, 900), bounds, CIIPCaptureEdgeNone);
+    assert(CGRectEqualToRect(moved, CGRectMake(-400, 580, 150, 120)));
+
+    CGRect resized = captureAdjustedRect(initial, start, CGPointMake(-20, -30), bounds, CIIPCaptureEdgeLeft | CIIPCaptureEdgeTop);
+    assert(CGRectEqualToRect(resized, CGRectMake(-120, -80, 170, 150)));
+    resized = captureAdjustedRect(initial, start, CGPointMake(900, 900), bounds, CIIPCaptureEdgeRight | CIIPCaptureEdgeBottom);
+    assert(CGRectEqualToRect(resized, CGRectMake(-100, -50, 900, 750)));
+    resized = captureAdjustedRect(initial, start, CGPointMake(900, 900), bounds, CIIPCaptureEdgeLeft | CIIPCaptureEdgeTop);
+    assert(CGRectEqualToRect(resized, CGRectMake(49, 69, 1, 1)));
+    resized = captureAdjustedRect(initial, start, CGPointMake(-900, -900), bounds, CIIPCaptureEdgeRight | CIIPCaptureEdgeBottom);
+    assert(CGRectEqualToRect(resized, CGRectMake(-100, -50, 1, 1)));
+    resized = captureAdjustedRect(initial, start, CGPointMake(20, 40), bounds, CIIPCaptureEdgeRight);
+    assert(CGRectEqualToRect(resized, CGRectMake(-100, -50, 170, 120)));
+    assert(CGRectIsNull(captureAdjustedRect(CGRectNull, start, start, bounds, CIIPCaptureEdgeNone)));
+}
 int main(int argc, const char **argv) {
     @autoreleasepool {
+        testCaptureAdjustmentGeometry();
         testCaptureMeasurementGuides();
         testCaptureLayoutGuides();
         [NSApplication sharedApplication];

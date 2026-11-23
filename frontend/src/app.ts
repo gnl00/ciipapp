@@ -158,6 +158,7 @@ const editorStyles=createEditorStyleStore({
  },
  onError:error=>notify('工具样式保存或读取失败：'+errorMessage(error),true),
 });
+const selectionStyle:Partial<Pick<EditorStyle,'color'|'stroke'>>={};
 let quickEditor:ReturnType<typeof createQuickEditor>=null;
 const capturePopup=createPopover($('capture-menu-toggle'),$('capture-menu'));
 const appearancePopup=createPopover($('appearance-toggle'),$('appearance-panel'));
@@ -332,7 +333,8 @@ function render(interactive=false) {
 function updateUI() {
   document.querySelectorAll<HTMLButtonElement>('[data-tool]').forEach(button => { const active = button.dataset.tool===tool; button.classList.toggle('active',active); button.setAttribute('aria-pressed',String(active)); button.disabled=busy; });
   document.querySelectorAll<HTMLButtonElement>('[data-color]').forEach(button => { button.classList.toggle('selected',button.dataset.color===color); button.setAttribute('aria-pressed',String(button.dataset.color===color)); button.disabled=busy; });
-  for (const id of (['copy','save','pin','zoom-in','zoom-out','zoom-value','fit'] as const)) $(id).disabled=!doc||busy||tool==='crop';
+  for (const id of (['copy','save','pin'] as const)) $(id).disabled=(!doc&&!quickEditor?.selecting)||busy||tool==='crop';
+  for (const id of (['zoom-in','zoom-out','zoom-value','fit'] as const)) $(id).disabled=!doc||busy||tool==='crop';
   $('capture').disabled=busy; $('start-capture').disabled=busy;
   for (const id of (['capture-menu-toggle','open','start-open','stroke','font-size','delete','cancel-crop','number-value','number-size'] as const)) $(id).disabled=busy;
   $('undo').disabled=!history?.canUndo||busy; $('redo').disabled=!history?.canRedo||busy;
@@ -406,12 +408,23 @@ function restoreEditorStyle(next:Tool) {
   stroke=next==='pen'?penStroke:next==='highlighter'?highlightStroke:style.stroke;
   if(next==='highlighter')color=style.highlightColor;
 }
+function prepareQuickTool(next:string) {
+  const patch:Partial<EditorStyle>={};
+  if(next==='pen'&&selectionStyle.stroke!==undefined)patch.penStroke=selectionStyle.stroke;
+  if(next==='highlighter'){
+    if(selectionStyle.color!==undefined)patch.highlightColor=selectionStyle.color;
+    if(selectionStyle.stroke!==undefined)patch.highlightStroke=selectionStyle.stroke;
+  }
+  if(Object.keys(patch).length)editorStyles.update(patch);
+}
 function rememberColor() {
   const kind=doc?.annotations.find(a=>a.id===selected)?.type||tool;
+  if(quickEditor?.selecting)selectionStyle.color=color;
   editorStyles.update(kind==='highlighter'?{highlightColor:color}:{color});
 }
 function rememberStroke() {
   const kind=doc?.annotations.find(a=>a.id===selected)?.type||tool;
+  if(quickEditor?.selecting)selectionStyle.stroke=stroke;
   const patch:Partial<EditorStyle>=kind==='pen'?{penStroke:stroke}:kind==='highlighter'?{highlightStroke:stroke}:{stroke};
   if(kind==='pen')penStroke=stroke;if(kind==='highlighter')highlightStroke=stroke;
   editorStyles.update(patch);
@@ -668,7 +681,8 @@ function exportPNG() {
   if(data==='data:,')throw new Error('图片过大，无法导出，请先裁剪');
   return data;
 }
-async function copyImage() { if(!doc||tool==='crop')return; await run('复制图片…',async()=>{ await call('CopyImage',exportPNG()); dirty=false; $('status').textContent='已复制当前图片'; notify('已复制到剪贴板'); await quickEditor?.finish(); }); }
+async function copyDocument() { await call('CopyImage',exportPNG()); dirty=false; $('status').textContent='已复制当前图片'; notify('已复制到剪贴板'); }
+async function copyImage() { if(!doc||tool==='crop')return; await run('复制图片…',async()=>{ if(quickEditor)await quickEditor.finish(true);else await copyDocument(); }); }
 async function saveImage() { if(!doc||tool==='crop')return; await run('保存图片…',async()=>{ const path=await call('SaveImage',exportPNG()); if(path){dirty=false;$('status').textContent='已保存 PNG';notify(`已保存：${path.split('/').pop()}`);await quickEditor?.finish();} }); }
 async function pinImage() { if(!doc){if(native)await call('ShowEditor');notify('先截图或打开图片，再贴图',true);return;}if(tool==='crop')return; await run(pinID?'更新贴图…':'创建贴图…',async()=>{
   const dataURL=exportPNG(), json=serializeDocument(doc!);
@@ -780,6 +794,7 @@ $('fit').onclick=fit; $('zoom-value').onclick=fit; $('zoom-in').onclick=()=>zoom
 new ResizeObserver(()=>{finishGesture();if(quickEditor||autoFit)fit();else if(selected)layoutSelection();}).observe($('workspace'));
 $('canvas-scroll').addEventListener('wheel',event=>{if(gesture?.rotating){event.preventDefault();return;}if(event.metaKey||event.ctrlKey){event.preventDefault();zoom(event.deltaY<0?1.1:1/1.1);}}, {passive:false});
 document.addEventListener('keydown',event=>{
+  if(quickEditor?.selecting)return;
   const editing=event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement || event.target instanceof HTMLSelectElement || (event.target as HTMLElement).isContentEditable;
   if(editing || $('replace-dialog').open || settings.open || busy)return;
   const key=event.key.toLowerCase(), mod=event.metaKey||event.ctrlKey;
@@ -844,8 +859,9 @@ function updateShortcutLabels(status:ShortcutStatus) {
  $('capture').title=`区域截图 ${area}`.trim();$('start-capture').querySelector('kbd')!.textContent=area;
  $('pin').title=`贴图 ${pin}`.trim();
 }
-quickEditor=createQuickEditor({call,loadCapture,finishEditing:async()=>{finishText();finishGesture();await editorStyles.flush();},serialize:()=>serializeDocument(doc!),notify,
+quickEditor=createQuickEditor({call,loadCapture,finishEditing:async()=>{finishText();finishGesture();await editorStyles.flush();},copyCapture:copyDocument,prepareTool:prepareQuickTool,serialize:()=>serializeDocument(doc!),notify,
  canCloseCanvas:event=>!!doc&&tool==='select'&&!textEdit&&!gesture&&![...doc!.annotations].reverse().some(a=>hitTest(a,pointer(event),6/scale))});
+if(quickEditor?.selecting){updateUI();refreshToolStyle();}
 if(native) call('GetStatus').then(async status=>{
  updateShortcutLabels(status.shortcuts);
  const unavailable=Object.entries(status.shortcuts||{}).filter(([,value])=>value.error).map(([name])=>({area:'区域截图',window:'窗口截图',element:'元素截图',screen:'全屏截图',pin:'贴图'})[name]);
@@ -854,9 +870,10 @@ if(native) call('GetStatus').then(async status=>{
  else {await editorStyles.refresh();if(!doc&&!gesture&&!textEdit){restoreEditorStyle(tool);updateUI();}}
 }).catch(error=>notify(errorMessage(error),true));
 if(!native)void editorStyles.refresh().then(()=>{if(!doc){restoreEditorStyle(tool);updateUI();}}).catch(error=>notify(errorMessage(error),true));
-window.addEventListener('focus',()=>{
+function refreshToolStyle(){
  void editorStyles.refresh().then(()=>{if(!selected&&!textEdit&&!gesture&&!busy){restoreEditorStyle(tool);updateUI();}}).catch(error=>notify(errorMessage(error),true));
-});
+}
+window.addEventListener('focus',refreshToolStyle);
 window.addEventListener('ciip:shortcuts-changed',()=>{if(native)void call('GetShortcutStatus').then(updateShortcutLabels).catch(error=>notify(errorMessage(error),true));});
 
 

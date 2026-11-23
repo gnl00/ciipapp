@@ -21,6 +21,9 @@ for (const [color, x, y, width, height] of [
   context.fillRect(x, y, width, height);
 }
 const qaImage = {dataURL:fixture.toDataURL(), width:1280, height:720, name:'ciip-quick-preview.png'};
+let submitQuickSelection;
+const quickSelection = new URLSearchParams(location.search).get('selection') === '1' ?
+  new Promise(resolve => { submitQuickSelection = resolve; }) : null;
 let qaPreferences = structuredClone(window.parent.ciipPrototypePreferences || {
   openAtLogin:false, showEditorOnLaunch:true, menuBarVisible:true,
   menuBarStyle:'icon', menuBarIcon:'capture', ocrEngine:'vision', ocrMode:'accurate', captureMode:'quick',
@@ -74,8 +77,18 @@ window.mygo = {call:async (method, ...args) => {
   }
   if (name === 'BeginShortcutRecording' || name === 'EndShortcutRecording') return shortcutStatus();
   if (name === 'GetQuickCapture') {
+    if (quickSelection && !await quickSelection) throw Error('快捷编辑已关闭');
     const scale=Math.min(.5,(innerWidth-24)/1280,(innerHeight-140)/720);
     return {image:qaImage,doubleClickMS:500,placement:{panel:{x:0,y:0,width:innerWidth,height:innerHeight},image:{x:(innerWidth-1280*scale)/2,y:28+(innerHeight-140-720*scale)/2,width:1280*scale,height:720*scale},scale,original:true}};
+  }
+  if (name === 'SubmitQuickSelection') {
+    const [action] = args;
+    if (!submitQuickSelection || !['capture','copy','cancel'].includes(action)) throw Error('选区不可用');
+    if (action === 'copy') recordExport('复制', qaImage.dataURL);
+    submitQuickSelection(action === 'capture');
+    submitQuickSelection = null;
+    if (action !== 'capture') window.parent.postMessage({type:'quick-closed'}, location.origin);
+    return null;
   }
   if(name==='GetQuickBounds')return {x:0,y:0,width:innerWidth,height:innerHeight};
   if(name==='TransformQuickWindow')throw Error('窗口移动和边框缩放请在 ciip 原生应用中验证');

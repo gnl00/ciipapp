@@ -4,7 +4,10 @@
 #include <stdlib.h>
 #include "../capture_selection_darwin.m"
 
-void ciip_go_capture_selection(uintptr_t token, uint32_t window, double x, double y, double width, double height) {}
+void ciip_go_capture_area_image(uintptr_t token, double x, double y, double width, double height, int copyOnly,
+    const void *png, size_t length, const char *error) {}
+
+void ciip_go_capture_selection(uintptr_t token, uint32_t window, double x, double y, double width, double height, int copyOnly) {}
 
 @interface CIIPCaptureMotionView : CIIPCaptureSelectionView
 @property(nonatomic) BOOL forceReducedMotion;
@@ -73,8 +76,14 @@ int main(int argc, const char **argv) {
         assert(clock && ![outline animationForKey:@"path"]);
         [view layout]; assert([view valueForKey:@"selectionClock"] == clock); // Unchanged layout must not interrupt following.
         assert(CGRectEqualToRect(CGPathGetBoundingBox(outline.path), CGRectInset(a, 1, 1)));
-        drainFor(.025);
-        CGRect first = CGPathGetBoundingBox([(CAShapeLayer *)outline.presentationLayer path]);
+        // Sample the presentation layer after a compositor update, which may
+        // arrive a run-loop turn after the display link changes the model.
+        NSDate *firstDeadline = [NSDate dateWithTimeIntervalSinceNow:.25];
+        CGRect first;
+        do {
+            drainFor(.005);
+            first = CGPathGetBoundingBox([(CAShapeLayer *)outline.presentationLayer path]);
+        } while (first.origin.x <= a.origin.x + 1 && firstDeadline.timeIntervalSinceNow > 0);
         if (!(first.origin.x > a.origin.x + 1 && first.origin.x < b.origin.x + 1)) fprintf(stderr, "selection motion: first x=%.2f, from=%.2f, to=%.2f\n", first.origin.x, a.origin.x + 1, b.origin.x + 1);
         assert(first.origin.x > a.origin.x + 1 && first.origin.x < b.origin.x + 1);
         renderFrame(background.layer, directory, @"selection-moving-1.png", panel.backingScaleFactor);

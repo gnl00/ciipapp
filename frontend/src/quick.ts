@@ -39,16 +39,18 @@ function createQuickToolScroll(tools:HTMLElement) {
  tools.addEventListener('scroll',update,{passive:true});tools.addEventListener('focusin',focus);update();
  return {destroy(){resized.disconnect();selected.disconnect();tools.removeEventListener('scroll',update);tools.removeEventListener('focusin',focus);}};
 }
-export function createQuickEditor({call,loadCapture,finishEditing,serialize,notify,canCloseCanvas}:{call:NativeCall;loadCapture:(image:CaptureImage,message?:string)=>Promise<void>;finishEditing:()=>void|Promise<void>;serialize:()=>string;notify:(message:string,error?:boolean)=>void;canCloseCanvas?:(event:MouseEvent)=>boolean}) {
+export function createQuickEditor({call,loadCapture,finishEditing,copyCapture,prepareTool,serialize,notify,canCloseCanvas}:{call:NativeCall;loadCapture:(image:CaptureImage,message?:string)=>Promise<void>;finishEditing:()=>void|Promise<void>;copyCapture:()=>Promise<void>;prepareTool:(tool:string)=>void;serialize:()=>string;notify:(message:string,error?:boolean)=>void;canCloseCanvas?:(event:MouseEvent)=>boolean}) {
  if(!isQuickMode)return null;
  document.body.classList.add('quick-mode');
+ let selecting=new URLSearchParams(location.search).get('selection')==='1';
+ if(selecting)document.body.classList.add('quick-selecting');
  const toolbar=document.querySelector<HTMLElement>('.toolbar')!,properties=document.querySelector<HTMLElement>('.properties')!,canvas=document.querySelector<HTMLCanvasElement>('#canvas')!;
  const panel=document.createElement('section');panel.className='quick-toolbar';panel.setAttribute('aria-label','快捷编辑工具栏');
  toolbar.before(panel);panel.append(toolbar,properties);
  const toolScroll=createQuickToolScroll(document.querySelector<HTMLElement>('#tools')!);
  const grip=document.createElement('div');grip.className='quick-window-grip';grip.title='拖动移动截图窗口 · 拖动窗口边缘缩放';grip.setAttribute('aria-label','移动截图窗口');document.body.append(grip);
  const full=document.createElement('button');full.className='quick-full';full.title='在完整编辑器中继续';full.setAttribute('aria-label','打开编辑器');full.innerHTML=glyph('M9 3H4a1 1 0 0 0-1 1v16a1 1 0 0 0 1 1h16a1 1 0 0 0 1-1v-5M13 3h8v8M21 3 11 13');toolbar.prepend(full);
- const done=document.createElement('button');done.className='quick-finish';done.title='完成快捷编辑 Esc';done.setAttribute('aria-label','完成快捷编辑');done.innerHTML=glyph('m5 12 4 4L19 6');toolbar.append(done);
+ const done=document.createElement('button');done.className='quick-finish';done.title='复制图片并完成';done.setAttribute('aria-label','复制图片并完成');done.innerHTML=glyph('m5 12 4 4L19 6');toolbar.append(done);
  const close=document.createElement('button');close.className='quick-close';close.title='结束快捷编辑 Esc · 双击图片空白处也可关闭';close.setAttribute('aria-label','结束快捷编辑');close.innerHTML='<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 6 8 8M14 6l-8 8"/></svg>';document.body.append(close);
  const copy=document.querySelector<HTMLButtonElement>('#copy')!;copy.title='复制当前编辑并完成 ⌘C';copy.querySelector('span:last-child')?.remove();
  const resizeFrame=document.createElement('div');resizeFrame.className='quick-resize-frame';resizeFrame.setAttribute('aria-label','截图窗口边框');
@@ -61,7 +63,39 @@ export function createQuickEditor({call,loadCapture,finishEditing,serialize,noti
   if(!active&&windowPointer){const current=windowPointer;windowPointer=null;if(current.target.hasPointerCapture(current.id))current.target.releasePointerCapture(current.id);}
  }});
  const viewport=()=>({width:innerWidth,height:innerHeight});
- const blocked=()=>ending||document.querySelector('dialog[open]')||!document.querySelector<HTMLElement>('#busy')!.hidden;
+ const blocked=()=>selecting||ending||document.querySelector('dialog[open]')||!document.querySelector<HTMLElement>('#busy')!.hidden;
+ let selectionPending=false, selectionIntent:HTMLButtonElement|null=null;
+ async function submitSelection(action:'capture'|'copy'|'cancel',intent:HTMLButtonElement|null=null){
+  if(selectionPending)return;
+  selectionPending=true;selectionIntent=intent;
+  try{await call('SubmitQuickSelection',action);}
+  catch(error){selectionPending=false;selectionIntent=null;notify(errorMessage(error),true);}
+ }
+ if(selecting){
+  toolbar.addEventListener('click',event=>{
+   if(!selecting)return;
+   const button=(event.target as Element).closest<HTMLButtonElement>('button');
+   if(!button)return;
+   const copies=button===copy||button===done;
+   if(!copies&&button!==full&&!button.dataset.tool&&button.id!=='save'&&button.id!=='pin')return;
+   event.preventDefault();event.stopImmediatePropagation();
+   void submitSelection(copies?'copy':'capture',copies?null:button);
+  },true);
+  window.addEventListener('keydown',event=>{
+   if(!selecting)return;
+   const action=event.key==='Escape'?'cancel':
+    (event.metaKey||event.ctrlKey)&&event.key.toLowerCase()==='c'?'copy':
+    event.key==='Enter'?'capture':null;
+   if(!action)return;
+   event.preventDefault();event.stopImmediatePropagation();
+   if(!event.repeat)void submitSelection(action);
+  },true);
+  window.addEventListener('contextmenu',event=>{
+   if(!selecting)return;
+   event.preventDefault();
+   void submitSelection('cancel');
+  });
+ }
  const resetMove=()=>{canvas.style.setProperty('--app-region','no-drag');canvas.classList.remove('is-window-moving');};
  function beginWindowGesture(event:PointerEvent,edge:string){
   if(!windowGesture.begin(edge,{x:event.screenX,y:event.screenY}))return false;
@@ -84,10 +118,11 @@ export function createQuickEditor({call,loadCapture,finishEditing,serialize,noti
   close.style.top=`${Math.max(inset,Math.min(innerHeight-size-inset,top))}px`;
   Object.assign(resizeFrame.style,{left:`${canvasRect.x}px`,top:`${canvasRect.y}px`,width:`${canvasRect.width}px`,height:`${canvasRect.height}px`});
  }
- async function finish(){if(ending)return;ending=true;windowGesture.cancel();try{await finishEditing();await call('CloseQuick');}catch(error){ending=false;notify(errorMessage(error),true);}}
+ async function finish(copyImage=false){if(ending)return;ending=true;windowGesture.cancel();try{await finishEditing();if(copyImage)await copyCapture();await call('CloseQuick');}catch(error){ending=false;notify(errorMessage(error),true);}}
  full.onclick=async()=>{if(blocked()||windowGesture.active)return;ending=true;try{await finishEditing();await call('OpenQuickInEditor',serialize());}catch(error){ending=false;notify(errorMessage(error),true);}};
  window.addEventListener('ciip:quick-open-editor',()=>full.click());
- close.onclick=done.onclick=()=>{if(blocked())return;void finish();};
+ close.onclick=()=>{if(blocked())return;void finish();};
+ done.onclick=()=>{if(blocked())return;void finish(true);};
  window.addEventListener('ciip:quick-transfer-cancelled',()=>{ending=false;});
  window.addEventListener('blur',()=>{lastPress=null;resetMove();windowGesture.cancel();});
  window.addEventListener('pointermove',event=>{if(event.pointerId===windowPointer?.id)windowGesture.update({x:event.screenX,y:event.screenY});});
@@ -104,12 +139,21 @@ export function createQuickEditor({call,loadCapture,finishEditing,serialize,noti
  window.addEventListener('resize',positionControls);
  canvas.addEventListener('dblclick',event=>{if(!blocked()&&canCloseCanvas?.(event)){event.preventDefault();void finish();}});
  return {
+  get selecting(){return selecting;},
   async start(){
-   capture=await call('GetQuickCapture');await loadCapture(capture.image,'快捷编辑 · 原图已自动复制');canvas.focus({preventScroll:true});
+   capture=await call('GetQuickCapture');
+   selecting=false;document.body.classList.remove('quick-selecting');
+   await loadCapture(capture.image,'快捷编辑 · 原图已自动复制');
+   const intent=selectionIntent;selectionIntent=null;
+   const tool=intent?.dataset.tool;
+   if(tool){prepareTool(tool);intent.click();}
+   canvas.focus({preventScroll:true});
    // Let WebKit commit the populated canvas before the native window fades in.
    // Hidden WebViews may pause animation frames, so readiness has a short bound.
    await new Promise<void>(resolve=>{const deadline=setTimeout(resolve,50);requestAnimationFrame(()=>requestAnimationFrame(()=>{clearTimeout(deadline);resolve();}));});
-   await call('QuickReady');canvas.focus({preventScroll:true});
+   await call('QuickReady');
+   canvas.focus({preventScroll:true});
+   if(!tool)intent?.click();
   },
   replaceImage(image:CaptureImage){if(capture&&(capture.image.dataURL!==image.dataURL||capture.image.width!==image.width||capture.image.height!==image.height))capture={...capture,image,placement:null};},
   scale(layout:FrameLayout){

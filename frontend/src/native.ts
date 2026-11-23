@@ -22,7 +22,7 @@ export interface NativeResponses {
  GetStatus:Status;BeginShortcutRecording:ShortcutStatus;EndShortcutRecording:ShortcutStatus;
  CheckForUpdates:UpdateResult;OpenUpdatePage:void;GetQuickCapture:QuickCapture;GetQuickBounds:ScreenRect;TransformQuickWindow:ScreenRect;
  Capture:CaptureImage|null;OpenImage:CaptureImage|null;RecognizeText:OCRResult;SaveImage:string|null;PinImage:string;
- UpdatePin:void;CopyImage:void;CopyText:void;CloseEditor:void;CloseQuick:void;QuickReady:void;ShowEditor:void;
+ UpdatePin:void;CopyImage:void;CopyText:void;CloseEditor:void;CloseQuick:void;QuickReady:void;SubmitQuickSelection:void;ShowEditor:void;
  HidePin:void;RestorePin:void;ClosePin:void;EditPin:void;ResizePin:void;RefreshPinShadow:void;
  OpenQuickInEditor:void;FinishQuickTransfer:void;ShowPermissionGuide:void;OpenScreenSettings:void;RevealApplication:void;
 }

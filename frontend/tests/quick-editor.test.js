@@ -25,9 +25,9 @@ function fixture(image={dataURL:'fixture',width:1280,height:720},placement={pane
  copy.querySelector=()=>({remove(){labelRemoved=true;}});
  const document={body:node(),createElement:node,querySelector:selector=>({'.toolbar':toolbar,'.properties':properties,'#tools':tools,'#copy':copy,'#canvas-wrap':wrap,'#busy':busy,'#canvas':canvas,'dialog[open]':modal?{}:null}[selector]),addEventListener(){}};
  const observer=class{constructor(callback){this.callback=callback;observers.push(this);}observe(){}disconnect(){this.disconnected=true;}};
- const context=vm.createContext({errorMessage,document,ResizeObserver:observer,MutationObserver:observer,matchMedia:()=>({matches:false}),innerWidth:664,innerHeight:500,window:{addEventListener:(type,fn)=>listeners[type]=fn},requestAnimationFrame:fn=>manualFrames?frames.push(fn):setImmediate(fn),setTimeout,clearTimeout,createQuickWindowGesture:options=>createQuickWindowGesture({...options,requestFrame:fn=>setImmediate(fn),cancelFrame:clearImmediate}),quickCanvasRect,fitQuickImage});
+ const context=vm.createContext({errorMessage,document,location:{search:hooks.selection?'?mode=quick&selection=1':'?mode=quick'},URLSearchParams,ResizeObserver:observer,MutationObserver:observer,matchMedia:()=>({matches:false}),innerWidth:664,innerHeight:500,window:{addEventListener:(type,fn)=>listeners[type]=fn},requestAnimationFrame:fn=>manualFrames?frames.push(fn):setImmediate(fn),setTimeout,clearTimeout,createQuickWindowGesture:options=>createQuickWindowGesture({...options,requestFrame:fn=>setImmediate(fn),cancelFrame:clearImmediate}),quickCanvasRect,fitQuickImage});
  vm.runInContext(source,context);
- const editor=context.createQuickEditor({call:async(method,...args)=>{calls.push({method,args});if(method===hooks.failMethod)throw Error('native operation failed');if(method==='GetQuickCapture')return {image,placement,doubleClickMS:800};if(method==='QuickReady')focused=toolbar;if(method==='GetQuickBounds')return {x:100,y:100,width:664,height:500};},loadCapture:async()=>{},finishEditing(){finishes++;return hooks.finishEditing?.();},serialize:()=>{serializations++;return '{"base":"fixture"}';},notify:(message,error)=>notifications.push({message,error}),canCloseCanvas:()=>closable});
+ const editor=context.createQuickEditor({call:async(method,...args)=>{calls.push({method,args});if(method===hooks.failMethod)throw Error('native operation failed');if(method==='GetQuickCapture'){await hooks.captureReady;return {image,placement,doubleClickMS:800};}if(method==='QuickReady'){focused=toolbar;await hooks.quickReady;}if(method==='GetQuickBounds')return {x:100,y:100,width:664,height:500};},loadCapture:async()=>hooks.loadCapture?.(),finishEditing(){finishes++;return hooks.finishEditing?.();},async copyCapture(){calls.push({method:'CopyImage',args:[image.dataURL]});await hooks.copyCapture?.();},prepareTool:tool=>hooks.prepareTool?.(tool),serialize:()=>{serializations++;return '{"base":"fixture"}';},notify:(message,error)=>notifications.push({message,error}),canCloseCanvas:()=>closable});
  return {editor,calls,listeners,wrap,busy,canvas,toolbar,tools,observers,toolButtons,notifications,body:document.body,nodes,frame(){frames.splice(0).forEach(fn=>fn());},get finishes(){return finishes;},get serializations(){return serializations;},get focused(){return focused;},get labelRemoved(){return labelRemoved;},set modal(value){modal=value;},set closable(value){closable=value;},resizeTools(width){toolsWidth=width;if(tools.parentElement)tools.parentElement.clientWidth=width;observers.forEach(observer=>observer.callback([]));},selectTool(index){toolButtons.forEach((button,i)=>button.attributes['aria-pressed']=String(i===index));observers.forEach(observer=>observer.callback([]));},resize(width,height){context.innerWidth=width;context.innerHeight=height;listeners.resize();}};
 }
 const baseLayout={crop:{x:0,y:0},offsetX:0,offsetY:0,width:1280,height:720};
@@ -44,12 +44,96 @@ const exits={
 for(const [name,exit]of Object.entries(exits))test(`${name} waits for editing persistence before closing or transferring once`,async()=>{
  let release;const saved=new Promise(resolve=>{release=resolve;}),h=fixture(undefined,undefined,false,{finishEditing:()=>saved});await h.editor.start();
  exit(h);await settle();exit(h);
- assert.equal(h.finishes,1);assert.equal(h.serializations,0);
+ assert.equal(h.finishes,1);assert.equal(h.serializations,0);assert.ok(!h.calls.some(call=>call.method==='CopyImage'));
  assert.equal(h.calls.filter(call=>['CloseQuick','OpenQuickInEditor'].includes(call.method)).length,0);
  release();await settle();
  const calls=h.calls.filter(call=>['CloseQuick','OpenQuickInEditor'].includes(call.method));
  assert.equal(calls.length,1);assert.equal(calls[0].method,name==='transfer'?'OpenQuickInEditor':'CloseQuick');
  assert.equal(h.serializations,name==='transfer'?1:0);
+ assert.equal(h.calls.filter(call=>call.method==='CopyImage').length,name==='done'?1:0);
+ if(name==='done')assert.deepEqual(h.calls.slice(-2).map(call=>call.method),['CopyImage','CloseQuick']);
+});
+
+test('quick finish keeps the window open when copying fails and permits retry',async()=>{
+ let failing=true;
+ const h=fixture(undefined,undefined,false,{copyCapture:()=>{if(failing)throw Error('copy failed');}});
+ await h.editor.start();
+ exits.done(h);await settle();
+ assert.ok(!h.calls.some(call=>call.method==='CloseQuick'));
+ assert.match(h.notifications[0].message,/copy failed/);
+ failing=false;exits.done(h);await settle();
+ assert.deepEqual(h.calls.slice(-2).map(call=>call.method),['CopyImage','CloseQuick']);
+});
+
+function selectToolbarButton(h,button){
+ h.toolbar.events.click({target:{closest:()=>button},preventDefault(){},stopImmediatePropagation(){}});
+}
+
+test('selection toolbar captures once and prepares the chosen tool before painting and revealing the editor',async()=>{
+ let release;
+ const captureReady=new Promise(resolve=>{release=resolve;});
+ const stages=[];
+ const h=fixture(undefined,undefined,true,{selection:true,captureReady,loadCapture:()=>stages.push('image'),prepareTool:name=>stages.push(name)});
+ const tool=h.toolButtons[2];tool.onclick=()=>stages.push('tool');
+ const start=h.editor.start();
+ assert.equal(h.editor.selecting,true);
+ selectToolbarButton(h,tool);
+ selectToolbarButton(h,h.toolButtons[4]);
+ assert.deepEqual(h.calls.filter(call=>call.method==='SubmitQuickSelection').map(call=>call.args),[['capture']]);
+ assert.deepEqual(stages,[]);
+ release();await settle();
+ assert.equal(h.editor.selecting,false);
+ assert.deepEqual(stages,['image','2','tool']);
+ assert.ok(!h.calls.some(call=>call.method==='QuickReady'));
+ h.frame();await settle();h.frame();await start;
+ assert.equal(h.calls.at(-1).method,'QuickReady');
+});
+
+test('selection toolbar waits for the small editor reveal before replaying a transfer',async()=>{
+ let release;
+ const quickReady=new Promise(resolve=>{release=resolve;});
+ const h=fixture(undefined,undefined,true,{selection:true,quickReady});
+ selectToolbarButton(h,h.nodes.find(node=>node.className==='quick-full'));
+ const start=h.editor.start();
+ await settle();h.frame();await settle();h.frame();await settle();
+ assert.equal(h.calls.at(-1).method,'QuickReady');
+ assert.equal(h.serializations,0);
+ release();await start;await settle();
+ assert.equal(h.calls.at(-1).method,'OpenQuickInEditor');
+});
+
+test('selection toolbar done requests clipboard-only capture without starting the editor',async()=>{
+ const h=fixture(undefined,undefined,false,{selection:true});
+ const done=h.nodes.find(node=>node.className==='quick-finish');
+ selectToolbarButton(h,done);
+ assert.deepEqual(h.calls,[{method:'SubmitQuickSelection',args:['copy']}]);
+ assert.equal(h.finishes,0);
+});
+
+test('selection toolbar Escape and right click cancel, and bare Return requests capture',()=>{
+ for(const [key,action]of [['Escape','cancel'],['Enter','capture']]){
+  const h=fixture(undefined,undefined,false,{selection:true});
+  h.listeners.keydown({key,target:null,preventDefault(){},stopImmediatePropagation(){}});
+  assert.deepEqual(h.calls,[{method:'SubmitQuickSelection',args:[action]}]);
+ }
+ const h=fixture(undefined,undefined,false,{selection:true});
+ h.listeners.contextmenu({preventDefault(){}});
+ assert.deepEqual(h.calls,[{method:'SubmitQuickSelection',args:['cancel']}]);
+});
+
+test('Return enters quick edit without a tool override even when a drawing button has focus',async()=>{
+ const stages=[];
+ const h=fixture(undefined,undefined,false,{selection:true,loadCapture:()=>stages.push('image'),prepareTool:tool=>stages.push(tool)});
+ const arrow=h.toolButtons[2];
+ arrow.onclick=()=>stages.push('tool');
+ let prevented=false,stopped=false;
+ h.listeners.keydown({key:'Enter',target:{closest:()=>arrow},preventDefault(){prevented=true;},stopImmediatePropagation(){stopped=true;}});
+ assert.equal(prevented,true);
+ assert.equal(stopped,true);
+ assert.deepEqual(h.calls,[{method:'SubmitQuickSelection',args:['capture']}]);
+ await h.editor.start();
+ assert.deepEqual(stages,['image']);
+ assert.equal(h.focused,h.canvas);
 });
 
 for(const name of ['finish','transfer'])test(`${name} keeps the document open on persistence failure and permits retry`,async()=>{

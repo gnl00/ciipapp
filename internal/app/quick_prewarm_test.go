@@ -10,10 +10,13 @@ import (
 
 func TestPreparedQuickWaitsForCaptureAndDoesNotOwnEditorCommands(t *testing.T) {
 	editor, window := &mygo.Window{}, &mygo.Window{}
-	prepared := &quickSession{window: window, token: "prepared", captureReady: make(chan struct{})}
+	prepared := &quickSession{window: window, token: "prepared", captureReady: make(chan struct{}), selectionToolbar: true}
 	s := &CaptureService{editor: editor, quickState: quickState{preparedQuick: prepared}}
 	if s.hasQuickEditor() || s.activeEditorWindow() != editor || !s.focusQuickEditor() {
 		t.Fatal("preloading must not expose a blank editor or take document commands")
+	}
+	if s.selectionToolbarWindow() != window || s.SubmitQuickSelection(context.Background(), "capture") == nil {
+		t.Fatal("only the prepared toolbar window can submit the selection")
 	}
 	result := make(chan QuickCapture, 1)
 	errors := make(chan error, 1)
@@ -36,7 +39,7 @@ func TestPreparedQuickWaitsForCaptureAndDoesNotOwnEditorCommands(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("capture did not release the waiting page")
 	}
-	if s.preparedQuick != nil || !s.hasQuickEditor() || s.activeEditorWindow() != window {
+	if s.preparedQuick != nil || !s.hasQuickEditor() || s.activeEditorWindow() != window || s.selectionToolbarWindow() != nil {
 		t.Fatal("published capture did not own editor commands")
 	}
 }

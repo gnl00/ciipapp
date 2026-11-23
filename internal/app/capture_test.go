@@ -3,13 +3,12 @@ package app
 import (
 	"bytes"
 	"encoding/base64"
-	"errors"
 	"image"
 	"image/color"
 	"image/png"
 	"os"
-	"os/exec"
 	"path/filepath"
+	"slices"
 	"testing"
 )
 
@@ -44,33 +43,19 @@ func TestImageValidationAndRoundTrip(t *testing.T) {
 	}
 }
 
-func TestCaptureArgumentsAndCancellation(t *testing.T) {
+func TestCaptureArguments(t *testing.T) {
 	for _, mode := range []string{"area; rm -rf /", "measure"} {
 		if _, err := captureArguments(mode); err == nil {
 			t.Fatalf("invalid capture mode accepted: %q", mode)
 		}
 	}
 	for _, mode := range []string{"area", "window", "element", "screen"} {
-		if _, err := captureArguments(mode); err != nil {
-			t.Fatal(err)
+		want := []string{"-x", "-t", "png"}
+		if mode == "screen" {
+			want = append(want, "-m")
 		}
-	}
-	exit := exec.Command("/bin/sh", "-c", "exit 1").Run()
-	if !captureCanceled(exit, os.ErrNotExist, "", true) {
-		t.Fatal("Esc exit should cancel")
-	}
-	for _, tc := range []struct {
-		run, read   error
-		stderr      string
-		interactive bool
-	}{
-		{exit, os.ErrNotExist, "could not create image", true},
-		{errors.New("cannot start"), os.ErrNotExist, "", true},
-		{exit, os.ErrNotExist, "", false},
-		{exit, nil, "", true},
-	} {
-		if captureCanceled(tc.run, tc.read, tc.stderr, tc.interactive) {
-			t.Fatal("failure classified as cancellation")
+		if args, err := captureArguments(mode); err != nil || !slices.Equal(args, want) {
+			t.Fatalf("%s arguments = %v, %v; want %v", mode, args, err, want)
 		}
 	}
 }

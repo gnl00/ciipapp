@@ -20,15 +20,16 @@ type quickState struct {
 	quickSequence atomic.Uint64
 }
 type quickSession struct {
-	window         *mygo.Window
-	image          *ImageData
-	placement      QuickPlacement
-	token          string
-	transferToken  string
-	ready          bool
-	captureReady   chan struct{}
-	motionDuration float64
-	motionCurve    [4]float64
+	window           *mygo.Window
+	image            *ImageData
+	placement        QuickPlacement
+	token            string
+	transferToken    string
+	ready            bool
+	captureReady     chan struct{}
+	motionDuration   float64
+	motionCurve      [4]float64
+	selectionToolbar bool
 }
 type QuickCapture struct {
 	Image         *ImageData     `json:"image"`
@@ -63,7 +64,7 @@ func (s *CaptureService) focusQuickEditor() bool {
 
 // Start loading the hidden editor while the user chooses a capture. No document
 // or editor commands belong to this window until presentQuick supplies the image.
-func (s *CaptureService) prepareQuick() error {
+func (s *CaptureService) prepareQuick(selectionToolbar bool) error {
 	s.quickMu.Lock()
 	if s.quick != nil {
 		s.quickMu.Unlock()
@@ -84,8 +85,13 @@ func (s *CaptureService) prepareQuick() error {
 		MinWidth: 1, MinHeight: 1, Frameless: true, Panel: true, AlwaysOnTop: true, Hidden: true, Transparent: true,
 		DisableShadow: true, DisableMaximize: true, DisableFullScreen: true, SkipTaskbar: true,
 	})
-	maintainQuickMaterial(win)
-	current := &quickSession{window: win, token: token, captureReady: make(chan struct{}), motionDuration: duration, motionCurve: curve}
+	query := "?mode=quick"
+	if selectionToolbar {
+		query += "&selection=1"
+	} else {
+		maintainQuickMaterial(win)
+	}
+	current := &quickSession{window: win, token: token, captureReady: make(chan struct{}), motionDuration: duration, motionCurve: curve, selectionToolbar: selectionToolbar}
 	s.quickMu.Lock()
 	if s.quick != nil || s.preparedQuick != nil {
 		s.quickMu.Unlock()
@@ -101,12 +107,12 @@ func (s *CaptureService) prepareQuick() error {
 		}
 	})
 	win.Page().OnWillNavigate(func(e *mygo.NavigateEvent) {
-		if e.URL != "about:blank" && e.URL != "mygo://localhost/?mode=quick" && e.URL != "mygo://localhost/index.html?mode=quick" {
+		if e.URL != "about:blank" && e.URL != "mygo://localhost/"+query && e.URL != "mygo://localhost/index.html"+query {
 			e.PreventDefault()
 		}
 	})
 	// Register the session before page JavaScript can request its capture.
-	if err := win.Page().LoadURL("/?mode=quick"); err != nil {
+	if err := win.Page().LoadURL("/" + query); err != nil {
 		s.detachPreparedQuick(token)
 		win.Destroy()
 		return err
@@ -133,18 +139,55 @@ func (s *CaptureService) discardPreparedQuick() {
 		current.window.Destroy()
 	}
 }
-func (s *CaptureService) presentQuick(image *ImageData, placement QuickPlacement) error {
-	if err := s.prepareQuick(); err != nil {
+func (s *quickState) selectionToolbarWindow() *mygo.Window {
+	s.quickMu.Lock()
+	defer s.quickMu.Unlock()
+	if s.preparedQuick != nil && s.preparedQuick.selectionToolbar {
+		return s.preparedQuick.window
+	}
+	return nil
+}
+
+func (s *CaptureService) SubmitQuickSelection(ctx context.Context, action string) error {
+	var actionID int
+	switch action {
+	case "capture":
+	case "copy":
+		actionID = 1
+	case "cancel":
+		actionID = 2
+	default:
+		return errors.New("未知截图选区操作")
+	}
+	if err := ctx.Err(); err != nil {
 		return err
+	}
+	caller := mygo.CallerWindow(ctx)
+	if caller == nil || caller != s.selectionToolbarWindow() || !submitNativeCaptureToolbar(ctx, caller, actionID) {
+		return errors.New("截图选区已关闭")
+	}
+	return nil
+}
+
+func (s *CaptureService) presentQuick(image *ImageData, placement QuickPlacement, toolbar *mygo.Window) error {
+	if toolbar == nil {
+		if err := s.prepareQuick(false); err != nil {
+			return err
+		}
 	}
 	s.quickMu.Lock()
 	current := s.preparedQuick
 	s.quickMu.Unlock()
-	if current == nil {
+	if current == nil || (toolbar != nil && (!current.selectionToolbar || current.window != toolbar)) || current.window.IsDestroyed() {
 		return errors.New("快捷编辑已关闭")
 	}
-	current.window.SetMinimumSize(min(quickMinWidth, placement.Panel.Width), min(quickMinHeight, placement.Panel.Height))
-	current.window.SetBounds(placement.Panel)
+	mygo.RunOnMain(func() {
+		current.window.SetMinimumSize(min(quickMinWidth, placement.Panel.Width), min(quickMinHeight, placement.Panel.Height))
+		current.window.SetBounds(placement.Panel)
+		if current.selectionToolbar {
+			maintainQuickMaterial(current.window)
+		}
+	})
 	if !s.publishQuickCapture(current, image, placement) {
 		return errors.New("快捷编辑已关闭")
 	}
@@ -167,8 +210,7 @@ func (s *CaptureService) presentQuick(image *ImageData, placement QuickPlacement
 	return nil
 }
 
-// Publish only after native bounds have been applied; cancellation may have
-// detached this prepared window while the main-thread operation was queued.
+// Apply native bounds before unblocking the page so it can paint at its final size.
 func (s *quickState) publishQuickCapture(current *quickSession, image *ImageData, placement QuickPlacement) bool {
 	s.quickMu.Lock()
 	defer s.quickMu.Unlock()

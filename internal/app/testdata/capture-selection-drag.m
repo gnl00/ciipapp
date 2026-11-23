@@ -1,6 +1,7 @@
 // Synthetic AppKit windows and direct event delivery; never injects desktop input.
 #import <Cocoa/Cocoa.h>
 #import <ApplicationServices/ApplicationServices.h>
+#import <ImageIO/ImageIO.h>
 #import <objc/runtime.h>
 #include <assert.h>
 #include <unistd.h>
@@ -12,6 +13,12 @@ static pid_t hitPID;
 static NSUInteger selectionCallbacks;
 static CGRect callbackRect;
 static uint32_t callbackWindow;
+static int callbackCopyOnly;
+static NSData *callbackPNG;
+static NSString *callbackError;
+static NSDictionary<NSNumber *, id> *snapshotFixtureFrames;
+static void (^pendingSnapshot)(NSDictionary<NSNumber *, id> *, NSString *);
+static NSArray<NSWindow *> *windowsToHideBeforeCallback;
 static BOOL holdHit;
 static dispatch_semaphore_t hitStarted, releaseHit;
 static NSDictionary<NSNumber *, NSArray *> *layoutChildren;
@@ -26,10 +33,28 @@ static AXError dragTimeout(AXUIElementRef element, float timeout) { return kAXEr
 #define AXUIElementCopyAttributeValue dragAttribute
 #define AXUIElementCopyAttributeValues dragAttributeValues
 #define AXUIElementSetMessagingTimeout dragTimeout
+#define ciip_capture_desktop_frames dragDesktopFrames
 #include "../capture_selection_darwin.m"
+#undef ciip_capture_desktop_frames
 
-void ciip_go_capture_selection(uintptr_t token, uint32_t window, double x, double y, double width, double height) {
-    selectionCallbacks++; callbackWindow = window; callbackRect = CGRectMake(x, y, width, height);
+void dragDesktopFrames(NSArray<NSNumber *> *displayIDs, void (^completion)(NSDictionary<NSNumber *, id> *, NSString *)) {
+    assert(!pendingSnapshot && [displayIDs count] == [snapshotFixtureFrames count]);
+    pendingSnapshot = [completion copy];
+}
+
+void ciip_go_capture_selection(uintptr_t token, uint32_t window, double x, double y, double width, double height, int copyOnly) {
+    for (NSWindow *overlay in windowsToHideBeforeCallback) assert(!overlay.visible);
+    selectionCallbacks++; callbackWindow = window; callbackRect = CGRectMake(x, y, width, height); callbackCopyOnly = copyOnly;
+}
+void ciip_go_capture_area_image(uintptr_t token, double x, double y, double width, double height, int copyOnly,
+    const void *png, size_t length, const char *error) {
+    NSData *data = png ? [NSData dataWithBytes:png length:length] : nil;
+    NSString *failure = error ? [NSString stringWithUTF8String:error] : nil;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [callbackPNG release]; callbackPNG = [data retain];
+        [callbackError release]; callbackError = [failure copy];
+        ciip_go_capture_selection(token, 0, x, y, width, height, copyOnly);
+    });
 }
 static CFArrayRef dragWindowInfo(CGWindowListOption options, CGWindowID window) {
     return (CFArrayRef)[(queryWindow ? @[queryWindow] : @[]) retain];
@@ -82,7 +107,10 @@ static AXError dragAttributeValues(AXUIElementRef element, CFStringRef attribute
 @property(nonatomic) CGRect completedRect;
 @end
 @implementation CIIPDragProbe
-- (void)confirm { self.confirmations++; }
+- (void)confirm {
+    self.confirmations++;
+    if (self.adjusting) [super confirm];
+}
 - (void)finish:(BOOL)accepted {
     if (self.finished) return;
     self.finished = YES; self.completions++; self.accepted = accepted; self.completedRect = self.rect;
@@ -130,6 +158,11 @@ static NSEvent *mouse(CIIPCaptureSelectionView *view, NSEventType type, CGPoint 
 static NSEvent *key(unsigned short code) {
     return [NSEvent keyEventWithType:NSEventTypeKeyDown location:NSZeroPoint modifierFlags:0 timestamp:0 windowNumber:0 context:nil characters:@"" charactersIgnoringModifiers:@"" isARepeat:NO keyCode:code];
 }
+static void drag(CIIPCaptureSelectionView *view, CGPoint start, CGPoint end) {
+    [view mouseDown:mouse(view, NSEventTypeLeftMouseDown, start)];
+    [view mouseDragged:mouse(view, NSEventTypeLeftMouseDragged, end)];
+    [view mouseUp:mouse(view, NSEventTypeLeftMouseUp, end)];
+}
 static void renderFrame(CIIPCaptureSelectionView *view, NSString *directory) {
     if (!directory) return;
     CGFloat scale = view.window.backingScaleFactor;
@@ -166,8 +199,11 @@ static void testClickAndDrag(NSString *directory) {
     CATextLayer *dimensions = (CATextLayer *)[view.layer.sublayers[2] sublayers][0];
     NSString *label = [dimensions.string string];
     assert([label isEqualToString:view.window.backingScaleFactor == 2 ? @"360 × 200 px" : @"180 × 100 px"]);
-    renderFrame(view, directory);
     [view mouseUp:mouse(view, NSEventTypeLeftMouseUp, end)];
+    assert(picker.adjusting && picker.completions == 0 && CGRectEqualToRect(picker.rect, expected));
+    assert(outline.lineDashPattern.count >= 2);
+    renderFrame(view, directory);
+    [view keyDown:key(36)];
     assert(picker.completions == 1 && picker.accepted && CGRectEqualToRect(picker.completedRect, expected));
     [view mouseUp:mouse(view, NSEventTypeLeftMouseUp, end)]; assert(picker.completions == 1);
     closeFixture(picker);
@@ -177,11 +213,15 @@ static void testReverseAndDesktopClip(void) {
     CGPoint start = pointInView(view, 240, 155), end = pointInView(view, 60, 55);
     [view mouseDown:mouse(view, NSEventTypeLeftMouseDown, start)]; [view mouseDragged:mouse(view, NSEventTypeLeftMouseDragged, end)];
     assert(CGRectEqualToRect(picker.rect, CGRectMake(end.x, end.y, 180, 100)));
-    [view mouseUp:mouse(view, NSEventTypeLeftMouseUp, end)]; assert(picker.accepted);
+    [view mouseUp:mouse(view, NSEventTypeLeftMouseUp, end)];
+    assert(picker.adjusting && picker.completions == 0);
+    [view keyDown:key(36)]; assert(picker.accepted);
     closeFixture(picker);
     picker = fixture(); view = [picker.panels[0] contentView];
     start = pointInView(view, 60, 55); end = pointInView(view, 240, 155);
     [view mouseDown:mouse(view, NSEventTypeLeftMouseDown, start)]; [view mouseUp:mouse(view, NSEventTypeLeftMouseUp, end)];
+    assert(picker.adjusting && picker.completions == 0);
+    [view keyDown:key(36)];
     assert(picker.accepted && CGRectEqualToRect(picker.completedRect, CGRectMake(start.x, start.y, 180, 100)));
     closeFixture(picker);
     picker = fixture(); view = [picker.panels[1] contentView];
@@ -190,7 +230,9 @@ static void testReverseAndDesktopClip(void) {
     [view mouseDown:mouse(view, NSEventTypeLeftMouseDown, start)]; [view mouseDragged:mouse(view, NSEventTypeLeftMouseDragged, end)];
     CGRect expected = CGRectMake(-150, -150, CGRectGetMaxX(desktop) + 150, CGRectGetMaxY(desktop) + 150);
     assert(CGRectEqualToRect(picker.rect, expected) && picker.rect.origin.x < 0 && picker.rect.origin.y < 0);
-    [view mouseUp:mouse(view, NSEventTypeLeftMouseUp, end)]; assert(picker.accepted);
+    [view mouseUp:mouse(view, NSEventTypeLeftMouseUp, end)];
+    assert(picker.adjusting && picker.completions == 0);
+    [view keyDown:key(36)]; assert(picker.accepted);
     closeFixture(picker);
 }
 static void testCancellation(void) {
@@ -206,6 +248,14 @@ static void testCancellation(void) {
         assert(picker.completions == 1 && !picker.accepted);
         closeFixture(picker);
     }
+    CIIPDragProbe *picker = fixture();
+    CIIPCaptureSelectionView *view = [picker.panels[0] contentView];
+    CGPoint start = pointInView(view, 60, 55), end = pointInView(view, 240, 155);
+    drag(view, start, end);
+    assert(picker.adjusting && picker.completions == 0);
+    [view keyDown:key(53)];
+    assert(picker.completions == 1 && !picker.accepted && !picker.copyOnly);
+    closeFixture(picker);
 }
 static void testLateAXDoesNotReplaceDrag(void) {
     CIIPDragProbe *picker = fixture(); CIIPCaptureSelectionView *view = [picker.panels[0] contentView];
@@ -227,11 +277,13 @@ static void testLateAXDoesNotReplaceDrag(void) {
     [view mouseDown:mouse(view, NSEventTypeLeftMouseDown, start)]; [view mouseDragged:mouse(view, NSEventTypeLeftMouseDragged, end)];
     CGRect expected = picker.rect;
     mousePoint = CGPointMake(50000, 50000); [picker sample]; assert(CGRectEqualToRect(picker.rect, expected));
+    [view mouseUp:mouse(view, NSEventTypeLeftMouseUp, end)];
+    assert(picker.adjusting && picker.completions == 0);
     holdHit = NO; dispatch_semaphore_signal(releaseHit);
     until = [NSDate dateWithTimeIntervalSinceNow:2];
     while (picker.querying && until.timeIntervalSinceNow > 0) drainFor(.001);
-    assert(!picker.querying && picker.draggingSelection && !picker.pending && !picker.targetWindow && CGRectEqualToRect(picker.rect, expected));
-    [view mouseUp:mouse(view, NSEventTypeLeftMouseUp, end)]; assert(picker.accepted && CGRectEqualToRect(picker.completedRect, expected));
+    assert(!picker.querying && picker.adjusting && !picker.pending && !picker.targetWindow && CGRectEqualToRect(picker.rect, expected));
+    [view keyDown:key(36)]; assert(picker.accepted && CGRectEqualToRect(picker.completedRect, expected));
     [queryWindow release]; queryWindow = nil;
     dispatch_release(hitStarted); dispatch_release(releaseHit); closeFixture(picker);
 }
@@ -239,6 +291,279 @@ static void awaitMeasurementHit(CIIPCapturePicker *picker) {
     NSDate *until = [NSDate dateWithTimeIntervalSinceNow:2];
     while (picker.querying && until.timeIntervalSinceNow > 0) drainFor(.001);
     assert(!picker.querying && !picker.pending);
+}
+static NSButton *adjustmentButton(NSView *view, NSString *identifier) {
+    if ([view isKindOfClass:NSButton.class] && [view.identifier isEqualToString:identifier]) return (NSButton *)view;
+    for (NSView *subview in view.subviews) {
+        NSButton *button = adjustmentButton(subview, identifier);
+        if (button) return button;
+    }
+    return nil;
+}
+static CGImageRef frozenFixtureImage(void) {
+    CGColorSpaceRef colorSpace = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+    CGContextRef context = CGBitmapContextCreate(NULL, 128, 128, 8, 0, colorSpace, kCGImageAlphaPremultipliedLast);
+    CGColorSpaceRelease(colorSpace);
+    assert(context);
+    CGContextSetRGBFillColor(context, 1, 0, 0, 1);
+    CGContextFillRect(context, CGRectMake(0, 0, 128, 128));
+    CGImageRef image = CGBitmapContextCreateImage(context);
+    CGContextRelease(context);
+    return image;
+}
+static void finishSnapshotFixture(void) {
+    assert(pendingSnapshot);
+    void (^completion)(NSDictionary<NSNumber *, id> *, NSString *) = pendingSnapshot;
+    pendingSnapshot = nil;
+    completion(snapshotFixtureFrames, nil);
+    [completion release];
+}
+static void testFrozenAreaSession(void) {
+    CGImageRef image = frozenFixtureImage();
+    NSMutableDictionary *frames = [NSMutableDictionary dictionary];
+    for (NSScreen *screen in NSScreen.screens)
+        frames[screen.deviceDescription[@"NSScreenNumber"]] = (id)image;
+    CGImageRelease(image);
+    snapshotFixtureFrames = frames;
+    NSUInteger callbacks = selectionCallbacks;
+    assert(ciip_start_capture_selection(401, 3, .12, 0));
+    assert(activeCapturePicker && !activeCapturePicker.panels.count && selectionCallbacks == callbacks);
+    ciip_cancel_capture_selection(401);
+    assert(!activeCapturePicker && selectionCallbacks == callbacks + 1);
+    finishSnapshotFixture();
+    assert(!activeCapturePicker && selectionCallbacks == ++callbacks);
+
+    assert(ciip_start_capture_selection(402, 3, .12, 0));
+    assert(activeCapturePicker && !activeCapturePicker.panels.count);
+    finishSnapshotFixture();
+    CIIPCapturePicker *picker = activeCapturePicker;
+    assert(picker.panels.count == frames.count && picker.frozenFrames == frames);
+    CIIPCaptureSelectionView *view = [[[picker.panels.firstObject contentView] retain] autorelease];
+    assert(view.window.isOpaque && !view.window.ignoresMouseEvents);
+    CALayer *snapshot = view.layer.sublayers.firstObject;
+    assert(snapshot.contents == (id)image);
+    CGPoint start = pointInView(view, 40, 40), end = pointInView(view, 140, 120);
+    drag(view, start, end);
+    assert(picker.adjusting && snapshot.contents == (id)image);
+    windowsToHideBeforeCallback = [NSArray arrayWithArray:picker.panels];
+    [adjustmentButton(view, @"capture-copy") performClick:nil];
+    NSDate *until = [NSDate dateWithTimeIntervalSinceNow:2];
+    while (selectionCallbacks == callbacks && until.timeIntervalSinceNow > 0) drainFor(.005);
+    windowsToHideBeforeCallback = nil;
+    assert(selectionCallbacks == callbacks + 1 && !activeCapturePicker && !callbackError && callbackPNG.length > 0);
+    assert(callbackCopyOnly && CGRectEqualToRect(callbackRect, CGRectIntegral(CGRectMake(start.x, start.y, 100, 80))));
+    CGImageSourceRef source = CGImageSourceCreateWithData((CFDataRef)callbackPNG, NULL);
+    CGImageRef cropped = source ? CGImageSourceCreateImageAtIndex(source, 0, NULL) : NULL;
+    assert(cropped);
+    uint8_t pixel[4];
+    CGColorSpaceRef colorSpace = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+    CGContextRef context = CGBitmapContextCreate(pixel, 1, 1, 8, 4, colorSpace, kCGImageAlphaPremultipliedLast);
+    assert(context);
+    CGContextDrawImage(context, CGRectMake(0, 0, 1, 1), cropped);
+    assert(pixel[0] == 255 && pixel[1] == 0 && pixel[2] == 0 && pixel[3] == 255);
+    CGContextRelease(context); CGColorSpaceRelease(colorSpace); CGImageRelease(cropped); CFRelease(source);
+    [callbackPNG release]; callbackPNG = nil; snapshotFixtureFrames = nil;
+}
+static void testAreaAdjustment(void) {
+    CIIPCapturePicker *picker = pickerFixture(CIIPCapturePicker.class);
+    picker.areaMode = YES; picker.elementMode = NO;
+    CIIPCaptureSelectionView *view = [[[picker.panels[0] contentView] retain] autorelease];
+    NSUInteger callbacks = selectionCallbacks;
+    [view keyDown:key(36)];
+    assert(!picker.adjusting && !picker.finished && selectionCallbacks == callbacks);
+
+    CGPoint start = pointInView(view, 60, 55);
+    drag(view, start, pointInView(view, 220, 125));
+    assert(picker.adjusting && !picker.finished && selectionCallbacks == callbacks);
+    assert(CGRectEqualToRect(picker.rect, CGRectMake(start.x, start.y, 160, 70)));
+
+    CGPoint moved = pointInView(view, 80, 65);
+    drag(view, pointInView(view, 140, 90), pointInView(view, 160, 100));
+    assert(CGRectEqualToRect(picker.rect, CGRectMake(moved.x, moved.y, 160, 70)));
+    drag(view, pointInView(view, 240, 100), pointInView(view, 250, 100));
+    assert(CGRectEqualToRect(picker.rect, CGRectMake(moved.x, moved.y, 170, 70)));
+    CGPoint resized = pointInView(view, 65, 50);
+    drag(view, moved, resized);
+    assert(CGRectEqualToRect(picker.rect, CGRectMake(resized.x, resized.y, 185, 85)));
+
+    CGPoint redrawn = pointInView(view, 20, 170);
+    drag(view, redrawn, pointInView(view, 55, 204));
+    CGRect expected = CGRectMake(redrawn.x, redrawn.y, 35, 34);
+    assert(picker.adjusting && CGRectEqualToRect(picker.rect, expected));
+    assert(!picker.finished && selectionCallbacks == callbacks);
+    NSButton *copy = adjustmentButton(view, @"capture-copy");
+    assert(copy && copy.enabled && ![copy isHiddenOrHasHiddenAncestor]);
+    [copy performClick:nil];
+    assert(picker.finished && !picker.panels.count && selectionCallbacks == callbacks + 1);
+    assert(callbackCopyOnly && callbackWindow == 0 && CGRectEqualToRect(callbackRect, expected));
+}
+static void testPreparedToolbarRouting(CIIPCaptureSelectionView *view, NSWindow *toolbar) {
+    NSWindow *overlay = view.window;
+    NSPoint overToolbar = NSMakePoint(NSMidX(toolbar.frame), NSMidY(toolbar.frame));
+    NSPoint overOverlay = NSMakePoint(NSMinX(overlay.frame) + 2, NSMaxY(overlay.frame) - 2);
+    NSPanel *marker = [[[NSPanel alloc] initWithContentRect:NSMakeRect(overOverlay.x, overOverlay.y, 1, 1)
+        styleMask:NSWindowStyleMaskBorderless | NSWindowStyleMaskNonactivatingPanel backing:NSBackingStoreBuffered defer:NO] autorelease];
+    marker.releasedWhenClosed = NO; marker.ignoresMouseEvents = YES; marker.level = toolbar.level + 1;
+    marker.collectionBehavior = overlay.collectionBehavior; [marker orderFrontRegardless];
+    NSDate *until = [NSDate dateWithTimeIntervalSinceNow:1];
+    NSInteger toolbarHit = 0, overlayHit = 0;
+    while (until.timeIntervalSinceNow > 0) {
+        drainFor(.02);
+        toolbarHit = [NSWindow windowNumberAtPoint:overToolbar belowWindowWithWindowNumber:marker.windowNumber];
+        overlayHit = [NSWindow windowNumberAtPoint:overOverlay belowWindowWithWindowNumber:marker.windowNumber];
+        if (toolbarHit == toolbar.windowNumber && overlayHit == overlay.windowNumber) break;
+    }
+    if (toolbarHit != toolbar.windowNumber || overlayHit != overlay.windowNumber)
+        fprintf(stderr, "selection routing: toolbar hit=%ld/%ld level=%ld, overlay hit=%ld/%ld level=%ld\n",
+            (long)toolbarHit, (long)toolbar.windowNumber, (long)toolbar.level,
+            (long)overlayHit, (long)overlay.windowNumber, (long)overlay.level);
+    assert(toolbarHit == toolbar.windowNumber && overlayHit == overlay.windowNumber);
+    [marker close];
+    CGPoint point = CGPointMake(overToolbar.x, view.picker.desktopTop - overToolbar.y);
+    CGPoint outside = CGPointMake(overOverlay.x, view.picker.desktopTop - overOverlay.y);
+    [view mouseMoved:mouse(view, NSEventTypeMouseMoved, outside)];
+    assert(NSCursor.currentCursor == NSCursor.crosshairCursor);
+    [view mouseMoved:mouse(view, NSEventTypeMouseMoved, point)];
+    assert(NSCursor.currentCursor == NSCursor.arrowCursor && "selection overlay must hand the cursor off at the toolbar");
+    [NSCursor.pointingHandCursor set];
+    [view mouseMoved:mouse(view, NSEventTypeMouseMoved, point)];
+    assert(NSCursor.currentCursor == NSCursor.pointingHandCursor && "selection overlay must preserve the toolbar's hover cursor");
+    CGRect selection = view.picker.rect;
+    CGPoint edge = CGPointMake(CGRectGetMaxX(selection), CGRectGetMidY(selection));
+    CGPoint resized = CGPointMake(edge.x + 18, edge.y);
+    drag(view, edge, resized);
+    assert(CGRectGetMaxX(view.picker.rect) == resized.x);
+    NSCursor *resizeCursor = captureAdjustmentCursor(CIIPCaptureEdgeRight, NO, NO);
+    assert(NSCursor.currentCursor == resizeCursor);
+    // The exit is delivered to the overlay and may still carry its last edge
+    // location. Subsequent mouseMoved events go directly to the toolbar.
+    [view mouseExited:mouse(view, NSEventTypeMouseMoved, resized)];
+    assert(NSCursor.currentCursor == NSCursor.arrowCursor && "leaving the resized selection must release its cursor");
+    NSEvent *queuedEdgeMove = mouse(view, NSEventTypeMouseMoved, resized);
+    mousePoint = NSPointToCGPoint(overToolbar);
+    [view mouseMoved:queuedEdgeMove];
+    assert(NSCursor.currentCursor == NSCursor.arrowCursor && "a queued edge move must not take the toolbar cursor");
+    assert(!toolbar.isKeyWindow);
+    // AppKit can route the event to the toolbar before the live location agrees.
+    mousePoint = NSPointToCGPoint(overOverlay);
+    [resizeCursor set];
+    [view.picker updateQuickToolbarCursorForWindow:toolbar];
+    assert(NSCursor.currentCursor == NSCursor.arrowCursor && "non-key toolbar must replace the stale resize cursor on arrival");
+    [NSCursor.pointingHandCursor set];
+    [view.picker updateQuickToolbarCursorForWindow:toolbar];
+    assert(NSCursor.currentCursor == NSCursor.pointingHandCursor && "toolbar must preserve the button's hover cursor");
+    [view mouseEntered:mouse(view, NSEventTypeMouseMoved, resized)];
+    assert(NSCursor.currentCursor == resizeCursor && "reentering the overlay must restore its resize cursor");
+    [view.picker updateQuickToolbarCursorForWindow:view.window];
+    assert(NSCursor.currentCursor == resizeCursor && "overlay mouse moves must leave its resize cursor in place");
+    drag(view, resized, edge);
+    assert(CGRectEqualToRect(view.picker.rect, selection));
+}
+
+static NSWindow *prepareToolbarFixture(CIIPCapturePicker *picker) {
+    NSWindow *overlay = picker.panels[0];
+    overlay.level = NSScreenSaverWindowLevel;
+    [overlay orderFrontRegardless];
+    NSWindow *toolbar = [[[NSPanel alloc] initWithContentRect:NSMakeRect(0, 0, 220, 48) styleMask:NSWindowStyleMaskBorderless | NSWindowStyleMaskNonactivatingPanel
+        backing:NSBackingStoreBuffered defer:NO] autorelease];
+    toolbar.releasedWhenClosed = NO;
+    toolbar.level = NSFloatingWindowLevel;
+    picker.quickToolbar = toolbar;
+    picker.quickToolbarLevel = toolbar.level;
+    picker.quickToolbarBehavior = toolbar.collectionBehavior;
+    picker.quickToolbarAcceptedMouseMoves = toolbar.acceptsMouseMovedEvents;
+    assert(!activeCapturePicker);
+    activeCapturePicker = picker;
+    return toolbar;
+}
+static void testPreparedToolbarAdjustment(BOOL copyOnly) {
+    CIIPCapturePicker *picker = pickerFixture(CIIPCapturePicker.class);
+    picker.areaMode = YES; picker.elementMode = NO;
+    CIIPCaptureSelectionView *view = [[[picker.panels[0] contentView] retain] autorelease];
+    NSRect display = view.window.frame;
+    NSWindow *toolbar = prepareToolbarFixture(picker);
+    NSRect originalFrame = toolbar.frame;
+    NSInteger originalLevel = toolbar.level;
+    NSUInteger callbacks = selectionCallbacks;
+    assert(!toolbar.visible);
+    assert(!ciip_submit_capture_toolbar((uintptr_t)toolbar, 1));
+
+    CGPoint start = pointInView(view, 60, 25);
+    drag(view, start, pointInView(view, 220, 95));
+    assert(picker.adjusting && toolbar.visible && toolbar.level > view.window.level);
+    assert(!NSEqualRects(toolbar.frame, originalFrame) && NSContainsRect(display, toolbar.frame));
+    assert(NSHeight(toolbar.frame) == 90 && toolbar.acceptsMouseMovedEvents);
+    assert(!NSIntersectsRect(toolbar.frame, NSMakeRect(NSMinX(display) + 60, NSMaxY(display) - 95, 160, 70)));
+    assert(!adjustmentButton(view, @"capture-copy") && !adjustmentButton(view, @"capture-confirm"));
+    NSVisualEffectView *material = (NSVisualEffectView *)toolbar.contentView.subviews.firstObject;
+    assert([material isKindOfClass:NSVisualEffectView.class] && material.blendingMode == NSVisualEffectBlendingModeBehindWindow);
+    testPreparedToolbarRouting(view, toolbar);
+
+    assert(!ciip_submit_capture_toolbar((uintptr_t)view.window, 1));
+    assert(!ciip_submit_capture_toolbar((uintptr_t)toolbar, 3));
+    assert(!picker.finished && selectionCallbacks == callbacks);
+
+    CGPoint moveStart = pointInView(view, 140, 60), moveEnd = pointInView(view, 160, 70);
+    [view mouseDown:mouse(view, NSEventTypeLeftMouseDown, moveStart)];
+    [view mouseDragged:mouse(view, NSEventTypeLeftMouseDragged, moveEnd)];
+    assert(!toolbar.visible);
+    assert(!ciip_submit_capture_toolbar((uintptr_t)toolbar, 1));
+    assert(!picker.finished && selectionCallbacks == callbacks);
+    [view mouseUp:mouse(view, NSEventTypeLeftMouseUp, moveEnd)];
+    assert(toolbar.visible && NSContainsRect(display, toolbar.frame));
+
+    windowsToHideBeforeCallback = [picker.panels arrayByAddingObject:toolbar];
+    assert(ciip_submit_capture_toolbar((uintptr_t)toolbar, copyOnly ? 1 : 0));
+    windowsToHideBeforeCallback = nil;
+    assert(picker.finished && !activeCapturePicker && selectionCallbacks == callbacks + 1);
+    assert(callbackCopyOnly == copyOnly && callbackWindow == 0 &&
+        CGRectEqualToRect(callbackRect, CGRectMake(start.x + 20, start.y + 10, 160, 70)));
+    assert(!toolbar.visible && toolbar.level == originalLevel && !toolbar.acceptsMouseMovedEvents);
+    assert(!ciip_submit_capture_toolbar((uintptr_t)toolbar, 1) && selectionCallbacks == callbacks + 1);
+    [toolbar close];
+}
+static void testAdjustmentCursors(void) {
+    assert(captureAdjustmentCursor(CIIPCaptureEdgeNone, NO, NO) == NSCursor.crosshairCursor);
+    assert(captureAdjustmentCursor(CIIPCaptureEdgeNone, YES, NO) == NSCursor.openHandCursor);
+    assert(captureAdjustmentCursor(CIIPCaptureEdgeNone, YES, YES) == NSCursor.closedHandCursor);
+    NSCursor *horizontal = captureAdjustmentCursor(CIIPCaptureEdgeLeft, YES, NO);
+    NSCursor *vertical = captureAdjustmentCursor(CIIPCaptureEdgeTop, YES, NO);
+    assert(horizontal && vertical && horizontal != vertical && horizontal != NSCursor.crosshairCursor && vertical != NSCursor.crosshairCursor);
+    CIIPCaptureEdge corners[] = {CIIPCaptureEdgeTop | CIIPCaptureEdgeLeft, CIIPCaptureEdgeTop | CIIPCaptureEdgeRight,
+        CIIPCaptureEdgeBottom | CIIPCaptureEdgeLeft, CIIPCaptureEdgeBottom | CIIPCaptureEdgeRight};
+    for (NSUInteger i = 0; i < 4; i++) {
+        NSCursor *cursor = captureAdjustmentCursor(corners[i], YES, NO);
+        assert(cursor && cursor != NSCursor.crosshairCursor && cursor != NSCursor.openHandCursor);
+    }
+}
+static void testElementClickAdjustment(void) {
+    CIIPCapturePicker *picker = pickerFixture(CIIPCapturePicker.class);
+    CIIPCaptureSelectionView *view = [[[picker.panels[0] contentView] retain] autorelease];
+    CFDictionaryRef bounds = CGRectCreateDictionaryRepresentation(panelRect(picker.panels[0], picker.desktopTop));
+    queryWindow = [@{(id)kCGWindowNumber:@77, (id)kCGWindowOwnerPID:@(getpid()), (id)kCGWindowOwnerName:@"Synthetic QA", (id)kCGWindowAlpha:@1, (id)kCGWindowBounds:(id)bounds} retain];
+    CFRelease(bounds);
+    NSUInteger callbacks = selectionCallbacks;
+    CGPoint start = pointInView(view, 80, 65);
+    hitRect = CGRectMake(start.x - 20, start.y - 15, 40, 30);
+    CGRect expected = hitRect;
+    [view mouseMoved:mouse(view, NSEventTypeMouseMoved, start)];
+    awaitMeasurementHit(picker);
+    drag(view, start, pointInView(view, 120, 65));
+    assert(!picker.adjusting && !picker.draggingSelection && selectionCallbacks == callbacks);
+    [view mouseMoved:mouse(view, NSEventTypeMouseMoved, start)];
+    awaitMeasurementHit(picker);
+    assert(CGRectEqualToRect(picker.rect, expected));
+    [view mouseDown:mouse(view, NSEventTypeLeftMouseDown, start)];
+    [view mouseUp:mouse(view, NSEventTypeLeftMouseUp, start)];
+    assert(picker.adjusting && !picker.finished && selectionCallbacks == callbacks);
+    [queryWindow release]; queryWindow = nil;
+    [view mouseMoved:mouse(view, NSEventTypeMouseMoved, pointInView(view, 240, 150))];
+    assert(!picker.querying && CGRectEqualToRect(picker.rect, expected));
+    NSButton *confirm = adjustmentButton(view, @"capture-confirm");
+    assert(confirm && confirm.enabled && ![confirm isHiddenOrHasHiddenAncestor]);
+    [confirm performClick:nil];
+    assert(picker.finished && !picker.panels.count && selectionCallbacks == callbacks + 1);
+    assert(!callbackCopyOnly && CGRectEqualToRect(callbackRect, expected));
 }
 static void testLayoutCollection(void) {
     pid_t base = getpid() + 30;
@@ -348,7 +673,10 @@ int main(int argc, const char **argv) {
         testClickAndDrag(argc > 1 ? [NSString stringWithUTF8String:argv[1]] : nil);
         testReverseAndDesktopClip(); testCancellation(); testLateAXDoesNotReplaceDrag();
         testMeasurementSession();
-        puts("PASS element click, drag, cancellation, late AX rejection, and element measurement session");
+        testAreaAdjustment(); testElementClickAdjustment(); testPreparedToolbarAdjustment(NO); testPreparedToolbarAdjustment(YES);
+        testFrozenAreaSession();
+        testAdjustmentCursors();
+        puts("PASS capture adjustment, prepared toolbar teardown before capture and copy, cursors, cancellation, late AX rejection, and element measurement session");
     }
     return 0;
 }

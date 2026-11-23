@@ -9,6 +9,9 @@
 #endif
 #include CIIP_PIN_INPUT_IMPLEMENTATION
 
+static BOOL selectingArea;
+BOOL ciip_area_selection_accepts_input(void) { return selectingArea; }
+
 static NSUInteger counts[3];
 static double products[3] = {1, 1, 1};
 void ciip_go_pin_magnify(uintptr_t token, double delta) {
@@ -66,6 +69,12 @@ int main(void) {
     handlePinMagnify(gesture(second,firstPoint,NSEventPhaseBegan,-.1));
     handlePinMagnify(gesture(second,firstPoint,NSEventPhaseEnded,0));
     CHECK(counts[1]==2 && fabs(products[1]-.9)<1e-9, "next gesture routes independently to first pin");
+    handlePinMagnify(gesture(first,firstPoint,NSEventPhaseBegan,.1));
+    NSUInteger beforeSelection=counts[1];
+    selectingArea=YES;
+    CHECK(handlePinMagnify(gesture(first,firstPoint,NSEventPhaseChanged,.2))!=nil &&
+        counts[1]==beforeSelection && !activePin, "area selection interrupts a pinch on a pin");
+    selectingArea=NO;
     NSUInteger firstCount=counts[1],secondCount=counts[2];
     handlePinMagnify(gesture(first,firstPoint,NSEventPhaseNone,.1));
     handlePinMagnify(gesture(first,secondPoint,NSEventPhaseNone,.1));

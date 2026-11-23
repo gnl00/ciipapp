@@ -13,6 +13,8 @@ import (
 type captureSelection struct {
 	WindowID uint32
 	Rect     ScreenRect
+	CopyOnly bool
+	PNG      []byte
 }
 
 // The selection token is the time for the native follower to cover 95% of a stationary target's distance.
@@ -64,7 +66,7 @@ func (s *captureSelection) arguments(mode string) ([]string, error) {
 			return nil, errors.New("截图窗口无效")
 		}
 		return []string{"-l", fmt.Sprint(s.WindowID), "-o"}, nil
-	case "element":
+	case "area", "element":
 		// Capture every touched point and use the same rect for quick placement.
 		r := s.Rect
 		s.Rect = ScreenRect{X: math.Floor(r.X), Y: math.Floor(r.Y), Width: math.Ceil(r.X+r.Width) - math.Floor(r.X), Height: math.Ceil(r.Y+r.Height) - math.Floor(r.Y)}

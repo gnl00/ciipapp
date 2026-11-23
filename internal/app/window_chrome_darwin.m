@@ -5,6 +5,7 @@
 #import <objc/runtime.h>
 #import <dispatch/dispatch.h>
 #include <stdint.h>
+#import "quick_material_darwin.h"
 
 double ciip_double_click_interval(void) { return [NSEvent doubleClickInterval]; }
 
@@ -116,20 +117,7 @@ void ciip_maintain_editor_chrome(uintptr_t handle, double x, double y) {
 void ciip_maintain_quick_material(uintptr_t handle) {
     NSWindow *window = (NSWindow *)handle;
     NSView *root = window.contentView;
-    static char key;
-    if (!root || objc_getAssociatedObject(window, &key)) return;
     // MyGo hosts WebKit in an unflipped NSView. Match the dock's CSS bottom 20px.
-    NSVisualEffectView *material = [[NSVisualEffectView alloc] initWithFrame:
-        NSMakeRect(12, 20, MAX(0, root.bounds.size.width-24), 84)];
-    material.material = NSVisualEffectMaterialPopover;
-    material.blendingMode = NSVisualEffectBlendingModeBehindWindow;
-    material.state = NSVisualEffectStateActive;
-    material.autoresizingMask = NSViewWidthSizable | NSViewMaxYMargin;
-    material.wantsLayer = YES;
-    material.layer.cornerRadius = 13;
-    material.layer.cornerCurve = kCACornerCurveContinuous;
-    material.layer.masksToBounds = YES;
-    [root addSubview:material positioned:NSWindowBelow relativeTo:nil];
-    objc_setAssociatedObject(window, &key, material, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    [material release];
+    setQuickToolbarMaterial(window, NSMakeRect(12, 20, MAX(0, NSWidth(root.bounds) - 24), 84),
+        NSViewWidthSizable | NSViewMaxYMargin);
 }

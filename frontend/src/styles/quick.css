@@ -59,6 +59,9 @@ body.quick-mode{display:block;background:transparent}
 .quick-mode #empty{background:transparent}
 .quick-mode .busy{z-index:30;background:#eff2ee66}
 .quick-mode #replace-dialog{max-width:calc(100vw - 24px);max-height:calc(100vh - 24px);padding:20px;overflow:auto}
+.quick-selecting .quick-toolbar{top:3px;left:var(--space-2);width:calc(100vw - var(--space-4))}
+.quick-selecting :is(.quick-window-grip,.quick-close,.quick-resize-frame,#empty,#canvas-scroll){display:none}
+.quick-selecting #toast{bottom:var(--space-2);pointer-events:none}
 
 @media(max-width:560px){
  .quick-mode .toolbar .tool-group:has(#undo),.quick-mode .quick-tools+.divider{display:none}
@@ -84,6 +87,7 @@ body.quick-mode{display:block;background:transparent}
  .quick-mode .mini-app-mark{width:48px;height:48px;font-size:21px;border-radius:12px}
 }
 @media(prefers-reduced-transparency:reduce){
+ :root:has(body.quick-selecting){background:transparent}
  .quick-toolbar{background:var(--material-toolbar-bg);backdrop-filter:var(--material-toolbar-filter);-webkit-backdrop-filter:var(--material-toolbar-filter)}
  .quick-mode .quick-close{background:var(--close-bg);backdrop-filter:var(--close-filter);-webkit-backdrop-filter:var(--close-filter)}
  .quick-mode #workspace,.quick-mode #canvas-scroll,body.quick-mode{background:transparent}

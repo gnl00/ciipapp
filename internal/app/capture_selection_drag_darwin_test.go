@@ -10,7 +10,7 @@ import (
 
 func TestNativeCaptureSelectionDrag(t *testing.T) {
 	binary := filepath.Join(t.TempDir(), "capture-selection-drag")
-	cmd := exec.Command("/usr/bin/clang", "-fblocks", "testdata/capture-selection-drag.m", "-framework", "Cocoa", "-framework", "ApplicationServices", "-framework", "QuartzCore", "-o", binary)
+	cmd := exec.Command("/usr/bin/clang", "-fblocks", "testdata/capture-selection-drag.m", "capture_snapshot_darwin.m", "capture_snapshot_crop_darwin.m", "-framework", "ImageIO", "-framework", "Cocoa", "-framework", "ApplicationServices", "-framework", "QuartzCore", "-o", binary)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("compile native drag regression: %v\n%s", err, out)
 	}

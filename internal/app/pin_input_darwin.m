@@ -9,6 +9,7 @@
 #include <string.h>
 
 extern void ciip_go_pin_magnify(uintptr_t token, double magnification);
+extern BOOL ciip_area_selection_accepts_input(void);
 
 @interface CIIPPinInput : NSObject
 @property(nonatomic, assign) NSWindow *window;
@@ -32,6 +33,11 @@ static BOOL tracePinInput(void) {
 }
 
 static NSEvent *handlePinMagnify(NSEvent *event) {
+    if (ciip_area_selection_accepts_input()) {
+        // The local monitor runs before the selection view receives the gesture.
+        activePin = nil;
+        return event;
+    }
     // A broken/phase-less stream expires without polling. Keep an edge pinch
     // alive as the image shrinks away, but let phase-less input move to another pin.
     BOOL unphased = event.phase == NSEventPhaseNone;

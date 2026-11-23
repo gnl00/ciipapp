@@ -98,11 +98,13 @@ func (s *CaptureService) Capture(ctx context.Context, mode string) (*ImageData, 
 	if mode == "element" && !nativeElementPermission() {
 		return nil, errors.New("元素截图需要辅助功能权限，请在系统设置 → 隐私与安全性 → 辅助功能中允许 ciip 后重试")
 	}
+	var toolbar *mygo.Window
 	if s.preferenceSnapshot().CaptureMode == "quick" {
-		if err := s.prepareQuick(); err != nil {
+		if err := s.prepareQuick(mode == "area" || mode == "element"); err != nil {
 			return nil, err
 		}
 		defer s.discardPreparedQuick()
+		toolbar = s.selectionToolbarWindow()
 	}
 	wasVisible := s.editor != nil && s.editor.IsVisible()
 	if s.editor != nil {
@@ -116,41 +118,33 @@ func (s *CaptureService) Capture(ctx context.Context, mode string) (*ImageData, 
 		}
 	}()
 	// Wait for the editor's hide to reach the compositor before capturing.
-	select {
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	case <-time.After(180 * time.Millisecond):
+	if mode != "area" || wasVisible {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(180 * time.Millisecond):
+		}
 	}
 	var data []byte
 	var captureRect *ScreenRect
-	if mode == "window" || mode == "element" {
-		selection, err := selectNativeCapture(ctx, mode)
-		if err != nil || selection == nil {
-			return nil, err
-		}
-		selectedArgs, selectionErr := selection.arguments(mode)
-		if selectionErr != nil {
+	var copyOnly bool
+	if mode != "screen" {
+		selection, selectionErr := selectNativeCapture(ctx, mode, toolbar)
+		if selectionErr != nil || selection == nil {
 			return nil, selectionErr
 		}
-		var supported bool
-		data, supported, err = captureNativeSelection(ctx, selection, mode)
-		if err != nil {
-			return nil, fmt.Errorf("截图未完成：%w", err)
-		}
-		if !supported {
-			// Older systems and cross-display regions retain the system
-			// capture. The bounded fallback covers close/compositor propagation;
-			// modern SCK requests the next frame after the native close barrier.
-			select {
-			case <-ctx.Done():
-				return nil, ctx.Err()
-			case <-time.After(180 * time.Millisecond):
+		if mode == "area" {
+			data = selection.PNG
+			if len(data) == 0 {
+				return nil, errors.New("冻结选区未返回有效截图")
 			}
-			data, _, err = captureCommand(ctx, append(args, selectedArgs...), false)
+		} else {
+			data, err = captureSelectedWindowOrElement(ctx, selection, mode, args)
 		}
 		captureRect = &selection.Rect
+		copyOnly = selection.CopyOnly
 	} else {
-		data, captureRect, err = captureCommand(ctx, args, mode == "area")
+		data, captureRect, err = captureCommand(ctx, args)
 	}
 	if err != nil || data == nil {
 		return nil, err
@@ -159,15 +153,24 @@ func (s *CaptureService) Capture(ctx context.Context, mode string) (*ImageData, 
 	if err != nil {
 		return nil, err
 	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if toolbar != nil && toolbar.IsDestroyed() {
+		return nil, nil
+	}
 	if err := mygo.Clipboard.WriteImage(raw); err != nil {
 		return nil, fmt.Errorf("截图已完成，但复制到剪贴板失败：%w", err)
+	}
+	if copyOnly {
+		return nil, nil
 	}
 	if s.preferenceSnapshot().CaptureMode == "quick" {
 		placement, placementErr := placeQuickImage(img.Width, img.Height, captureRect, mygo.Screen.Displays(), mygo.Screen.CursorScreenPoint())
 		if placementErr != nil {
 			return nil, placementErr
 		}
-		if err := s.presentQuick(img, placement); err != nil {
+		if err := s.presentQuick(img, placement, toolbar); err != nil {
 			return nil, err
 		}
 		quickStarted = true
@@ -176,6 +179,28 @@ func (s *CaptureService) Capture(ctx context.Context, mode string) (*ImageData, 
 	}
 	succeeded = true
 	return img, nil
+}
+
+func captureSelectedWindowOrElement(ctx context.Context, selection *captureSelection, mode string, args []string) ([]byte, error) {
+	selectedArgs, err := selection.arguments(mode)
+	if err != nil {
+		return nil, err
+	}
+	data, supported, err := captureNativeSelection(ctx, selection, mode)
+	if err != nil {
+		return nil, fmt.Errorf("截图未完成：%w", err)
+	}
+	if supported {
+		return data, nil
+	}
+	// The system utility needs time for the closed selection panels to leave the compositor.
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-time.After(180 * time.Millisecond):
+	}
+	data, _, err = captureCommand(ctx, append(args, selectedArgs...))
+	return data, err
 }
 
 func (s *CaptureService) measureElements(ctx context.Context) error {
@@ -189,13 +214,12 @@ func (s *CaptureService) measureElements(ctx context.Context) error {
 	if !nativeElementPermission() {
 		return errors.New("元素测量需要辅助功能权限，请在系统设置 → 隐私与安全性 → 辅助功能中允许 ciip 后重试")
 	}
-	_, err := selectNativeCapture(ctx, "measure")
+	_, err := selectNativeCapture(ctx, "measure", nil)
 	return err
 }
 
-// Interactive area/full-screen capture and older-system fallback keep the system
-// utility. Modern selected-window/element capture never creates a PNG file.
-func captureCommand(ctx context.Context, args []string, interactive bool) ([]byte, *ScreenRect, error) {
+// Full-screen capture and unsupported native selections use the system utility.
+func captureCommand(ctx context.Context, args []string) ([]byte, *ScreenRect, error) {
 	dir, err := os.MkdirTemp("", "ciip-capture-")
 	if err != nil {
 		return nil, nil, err
@@ -209,10 +233,6 @@ func captureCommand(ctx context.Context, args []string, interactive bool) ([]byt
 	if ctx.Err() != nil {
 		return nil, nil, ctx.Err()
 	}
-	data, readErr := readImageFile(path)
-	if captureCanceled(runErr, readErr, stderr.String(), interactive) {
-		return nil, nil, nil
-	}
 	if runErr != nil {
 		detail := strings.TrimSpace(stderr.String())
 		if detail == "" {
@@ -220,6 +240,7 @@ func captureCommand(ctx context.Context, args []string, interactive bool) ([]byt
 		}
 		return nil, nil, fmt.Errorf("截图未完成：%s。请在系统设置 → 隐私与安全性 → 屏幕与系统音频录制中允许 ciip", detail)
 	}
+	data, readErr := readImageFile(path)
 	if readErr != nil {
 		return nil, nil, fmt.Errorf("无法读取截图：%w", readErr)
 	}
@@ -229,26 +250,13 @@ func captureCommand(ctx context.Context, args []string, interactive bool) ([]byt
 func captureArguments(mode string) ([]string, error) {
 	args := []string{"-x", "-t", "png"}
 	switch mode {
-	case "area":
-		return append(args, "-i", "-s"), nil
-	case "window", "element":
-		return args, nil // The native picker supplies a window ID or an element rect.
+	case "area", "window", "element":
+		return args, nil // The native picker supplies the window ID or capture rectangle.
 	case "screen":
 		return append(args, "-m"), nil
 	default:
 		return nil, errors.New("未知截图模式")
 	}
-}
-
-func captureCanceled(runErr, readErr error, stderr string, interactive bool) bool {
-	if !interactive || !errors.Is(readErr, os.ErrNotExist) || strings.TrimSpace(stderr) != "" {
-		return false
-	}
-	if runErr == nil {
-		return true
-	}
-	var exit *exec.ExitError
-	return errors.As(runErr, &exit) && exit.ExitCode() == 1
 }
 
 func (s *CaptureService) OpenImage(ctx context.Context) (*ImageData, error) {

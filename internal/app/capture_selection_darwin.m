@@ -6,8 +6,13 @@
 #include <stdint.h>
 #include <math.h>
 #import "capture_measurement_darwin.h"
+#import "capture_adjustment_darwin.h"
+#import "quick_material_darwin.h"
+#import "capture_snapshot_darwin.h"
+#import "capture_snapshot_crop_darwin.h"
 
-extern void ciip_go_capture_selection(uintptr_t, uint32_t, double, double, double, double);
+extern void ciip_go_capture_selection(uintptr_t, uint32_t, double, double, double, double, int);
+extern void ciip_go_capture_area_image(uintptr_t, double, double, double, double, int, const void *, size_t, const char *);
 
 static BOOL usableCaptureRect(CGRect rect) {
     return !CGRectIsNull(rect) && !CGRectIsInfinite(rect) && isfinite(rect.origin.x) && isfinite(rect.origin.y) &&
@@ -221,6 +226,9 @@ static NSArray *captureElementsKeepingLeaf(NSArray *elements, NSArray *previous,
     CAShapeLayer *_measurementReference, *_measurementLines;
     CALayer *_layoutOverlay, *_layoutBadges;
     CAShapeLayer *_layoutBoxes, *_layoutLines;
+    CAShapeLayer *_adjustmentHandles;
+    NSVisualEffectView *_adjustmentControls;
+    NSCursor *_adjustmentCursor;
     NSArray *_drawnLayout;
     CGRect _drawnLayoutBounds;
     BOOL _drawnLayoutOnPointerDisplay;
@@ -232,10 +240,11 @@ static NSArray *captureElementsKeepingLeaf(NSArray *elements, NSArray *previous,
     BOOL _configured;
 }
 @property(nonatomic, assign) CIIPCapturePicker *picker;
-@property(nonatomic) BOOL leftPressed, rightPressed, cancelOnRelease;
+@property(nonatomic, readonly) BOOL leftPressed, rightPressed;
 - (void)updateSelectionAnimated:(BOOL)animated;
 - (BOOL)reduceSelectionMotion;
 - (void)stopSelectionAnimation;
+- (void)setFrozenImage:(CGImageRef)image;
 @end
 
 @interface CIIPCaptureSelectionPanel : NSPanel
@@ -246,9 +255,13 @@ static NSArray *captureElementsKeepingLeaf(NSArray *elements, NSArray *previous,
 
 @interface CIIPCapturePicker : NSObject
 @property(nonatomic) uintptr_t token;
-@property(nonatomic) BOOL elementMode, measurementMode, finished, pending, querying;
+@property(nonatomic) BOOL elementMode, measurementMode, areaMode, adjusting, copyOnly, finished, pending, querying;
 @property(nonatomic) BOOL trackingSelection, draggingSelection;
+@property(nonatomic) NSUInteger pressedMouseButtons;
+@property(nonatomic) BOOL cancelOnMouseRelease, selectionReleasePending;
 @property(nonatomic) CGPoint dragStart, dragPoint;
+@property(nonatomic) CGRect adjustmentStartRect;
+@property(nonatomic) CIIPCaptureEdge adjustmentEdges;
 @property(nonatomic) CGFloat desktopTop;
 @property(nonatomic) CGPoint point;
 @property(nonatomic) CGRect rect;
@@ -268,7 +281,14 @@ static NSArray *captureElementsKeepingLeaf(NSArray *elements, NSArray *previous,
 @property(nonatomic, retain) NSImage *appIcon;
 @property(nonatomic, copy) NSString *appName;
 @property(nonatomic, retain) NSMutableArray *panels;
+@property(nonatomic, retain) NSDictionary<NSNumber *, id> *frozenFrames;
+@property(nonatomic, retain) NSDictionary<NSNumber *, NSValue *> *frozenDisplayRects;
 @property(nonatomic, retain) NSTimer *timer;
+@property(nonatomic, retain) NSWindow *quickToolbar;
+@property(nonatomic) NSInteger quickToolbarLevel;
+@property(nonatomic) NSWindowCollectionBehavior quickToolbarBehavior;
+@property(nonatomic) BOOL quickToolbarAcceptedMouseMoves;
+@property(nonatomic, assign) id quickToolbarMouseMonitor;
 @property(nonatomic) NSTimeInterval selectionDuration;
 - (void)sample;
 - (void)clearAncestorProposal;
@@ -279,10 +299,15 @@ static NSArray *captureElementsKeepingLeaf(NSArray *elements, NSArray *previous,
 - (void)beginSelectionAtPoint:(CGPoint)point;
 - (void)updateSelectionAtPoint:(CGPoint)point;
 - (void)completeSelectionGesture;
+- (void)completeAdjustment:(BOOL)copyOnly;
+- (NSPanel *)adjustmentControlsPanel;
+- (void)positionQuickToolbar;
+- (void)updateQuickToolbarCursorForWindow:(NSWindow *)window;
 - (CGRect)measurementFrame;
 - (NSUInteger)measurementGuides:(CIIPMeasurementGuide *)guides;
 - (void)confirm;
 - (void)finish:(BOOL)accepted;
+- (void)showSelectionPanels:(NSArray<NSScreen *> *)screens;
 - (void)keyDown:(NSEvent *)event;
 @end
 
@@ -290,6 +315,46 @@ static CIIPCapturePicker *activeCapturePicker;
 // A pointer crossing the gap between children should not briefly spotlight their entire ancestor.
 // This selection policy also applies when the user reduces visual animation.
 static const NSTimeInterval captureAncestorDwell = .12;
+
+static CGRect capturePanelRect(NSPanel *panel, CGFloat desktopTop) {
+    NSRect frame = panel.frame;
+    return CGRectMake(NSMinX(frame), desktopTop - NSMaxY(frame), NSWidth(frame), NSHeight(frame));
+}
+
+static NSCursor *captureAdjustmentCursor(CIIPCaptureEdge edges, BOOL inside, BOOL dragging) {
+    if (!edges) return inside ? (dragging ? NSCursor.closedHandCursor : NSCursor.openHandCursor) : NSCursor.crosshairCursor;
+    BOOL horizontal = edges & (CIIPCaptureEdgeLeft | CIIPCaptureEdgeRight);
+    BOOL vertical = edges & (CIIPCaptureEdgeTop | CIIPCaptureEdgeBottom);
+    if (@available(macOS 15.0, *)) {
+        NSUInteger position = 0;
+        if (edges & CIIPCaptureEdgeLeft) position |= NSCursorFrameResizePositionLeft;
+        if (edges & CIIPCaptureEdgeRight) position |= NSCursorFrameResizePositionRight;
+        if (edges & CIIPCaptureEdgeTop) position |= NSCursorFrameResizePositionTop;
+        if (edges & CIIPCaptureEdgeBottom) position |= NSCursorFrameResizePositionBottom;
+        return [NSCursor frameResizeCursorFromPosition:(NSCursorFrameResizePosition)position inDirections:NSCursorFrameResizeDirectionsAll];
+    }
+    if (!vertical) return NSCursor.resizeLeftRightCursor;
+    if (!horizontal) return NSCursor.resizeUpDownCursor;
+    BOOL descending = !!(edges & CIIPCaptureEdgeLeft) == !!(edges & CIIPCaptureEdgeTop);
+    static NSCursor *corners[2];
+    if (!corners[descending]) {
+        NSImage *image = [NSImage imageWithSize:NSMakeSize(20, 20) flipped:NO drawingHandler:^BOOL(NSRect rect) {
+            CGFloat first = descending ? 16 : 4, last = 20 - first;
+            NSBezierPath *path = [NSBezierPath bezierPath];
+            path.lineCapStyle = NSLineCapStyleRound; path.lineJoinStyle = NSLineJoinStyleRound;
+            [path moveToPoint:NSMakePoint(4, first)]; [path lineToPoint:NSMakePoint(16, last)];
+            [path moveToPoint:NSMakePoint(9, first)]; [path lineToPoint:NSMakePoint(4, first)];
+            [path lineToPoint:NSMakePoint(4, first + (descending ? -5 : 5))];
+            [path moveToPoint:NSMakePoint(11, last)]; [path lineToPoint:NSMakePoint(16, last)];
+            [path lineToPoint:NSMakePoint(16, last + (descending ? 5 : -5))];
+            [NSColor.whiteColor setStroke]; path.lineWidth = 3.5; [path stroke];
+            [NSColor.blackColor setStroke]; path.lineWidth = 1.5; [path stroke];
+            return YES;
+        }];
+        corners[descending] = [[NSCursor alloc] initWithImage:image hotSpot:NSMakePoint(10, 10)];
+    }
+    return corners[descending];
+}
 
 static NSString *measurementNumber(CGFloat points) {
     return [NSNumberFormatter localizedStringFromNumber:@(points) numberStyle:NSNumberFormatterDecimalStyle];
@@ -348,47 +413,137 @@ static void positionMeasurementBadge(CALayer *plate, NSString *text, CGPoint cen
     }
     return self;
 }
+- (void)setFrozenImage:(CGImageRef)image {
+    self.layer.backgroundColor = NSColor.blackColor.CGColor;
+    CALayer *snapshot = [CALayer layer];
+    snapshot.frame = self.bounds;
+    snapshot.contents = (id)image;
+    snapshot.contentsGravity = kCAGravityResize;
+    snapshot.autoresizingMask = kCALayerWidthSizable | kCALayerHeightSizable;
+    [self.layer insertSublayer:snapshot below:_shade];
+}
 - (BOOL)acceptsFirstResponder { return YES; }
 - (BOOL)acceptsFirstMouse:(NSEvent *)event { return YES; }
-- (void)resetCursorRects { [self addCursorRect:self.bounds cursor:self.picker.elementMode ? NSCursor.crosshairCursor : captureSelectionCursor(self.picker.appIcon)]; }
+- (BOOL)mouseDownCanMoveWindow { return NO; }
+- (void)resetCursorRects {
+    if (self.picker.adjusting) return;
+    [self addCursorRect:self.bounds cursor:self.picker.elementMode || self.picker.areaMode ? NSCursor.crosshairCursor : captureSelectionCursor(self.picker.appIcon)];
+}
 - (void)updateTrackingAreas {
     if (_pointerTrackingArea) { [self removeTrackingArea:_pointerTrackingArea]; [_pointerTrackingArea release]; }
     _pointerTrackingArea = [[NSTrackingArea alloc] initWithRect:NSZeroRect options:NSTrackingMouseMoved | NSTrackingMouseEnteredAndExited | NSTrackingActiveAlways | NSTrackingInVisibleRect owner:self userInfo:nil];
     [self addTrackingArea:_pointerTrackingArea]; [super updateTrackingAreas];
 }
-- (void)mouseMoved:(NSEvent *)event { [self.picker sample]; }
-- (void)mouseEntered:(NSEvent *)event { [self.picker sample]; }
-- (void)mouseExited:(NSEvent *)event { [self.picker sample]; }
+- (void)showAdjustmentCursor:(NSCursor *)cursor {
+    if (_adjustmentCursor != cursor) {
+        [_adjustmentCursor release]; _adjustmentCursor = [cursor retain];
+    }
+    [cursor set];
+}
+- (void)handoffAdjustmentCursor {
+    if (_adjustmentCursor && NSCursor.currentCursor == _adjustmentCursor) [NSCursor.arrowCursor set];
+    [_adjustmentCursor release]; _adjustmentCursor = nil;
+}
+- (BOOL)pointIsOverQuickToolbar:(CGPoint)point {
+    NSWindow *toolbar = self.picker.quickToolbar;
+    return toolbar.isVisible && NSPointInRect(NSMakePoint(point.x, self.picker.desktopTop - point.y), toolbar.frame);
+}
+- (void)mouseMoved:(NSEvent *)event {
+    if (!self.picker.adjusting) { [self.picker sample]; return; }
+    CGPoint point = [self capturePointForEvent:event];
+    if ([self pointIsOverQuickToolbar:point] || [self pointIsOverQuickToolbar:[self capturePointForEvent:nil]]) {
+        [self handoffAdjustmentCursor]; return;
+    }
+    if (_adjustmentControls && !_adjustmentControls.hidden &&
+        NSPointInRect([self convertPoint:event.locationInWindow fromView:nil], _adjustmentControls.frame)) {
+        [NSCursor.arrowCursor set]; return;
+    }
+    CGRect rect = self.picker.rect;
+    CIIPCaptureEdge edges = captureAdjustmentEdge(rect, point, 7);
+    [self showAdjustmentCursor:captureAdjustmentCursor(edges, CGRectContainsPoint(rect, point), NO)];
+}
+- (void)mouseEntered:(NSEvent *)event { [self mouseMoved:event]; }
+- (void)mouseExited:(NSEvent *)event {
+    if (self.picker.adjusting) {
+        // The exit location can still be on the overlay when the toolbar takes over.
+        if (!self.picker.trackingSelection) [self handoffAdjustmentCursor];
+    } else [self.picker sample];
+}
 - (CGPoint)capturePointForEvent:(NSEvent *)event {
     NSPoint point = event && self.window ? [self.window convertPointToScreen:event.locationInWindow] : NSEvent.mouseLocation;
     return CGPointMake(point.x, self.picker.desktopTop - point.y);
 }
+- (BOOL)leftPressed { return (self.picker.pressedMouseButtons & 1) != 0; }
+- (BOOL)rightPressed { return (self.picker.pressedMouseButtons & 2) != 0; }
 - (void)mouseDown:(NSEvent *)event {
-    self.leftPressed = YES;
-    [self.picker beginSelectionAtPoint:[self capturePointForEvent:event]];
+    CIIPCapturePicker *picker = self.picker;
+    picker.pressedMouseButtons |= 1;
+    if (picker.cancelOnMouseRelease) return;
+    [picker beginSelectionAtPoint:[self capturePointForEvent:event]];
+    if (picker.adjusting) {
+        if (!self.window.isKeyWindow) [self.window makeKeyWindow];
+        [self showAdjustmentCursor:captureAdjustmentCursor(picker.adjustmentEdges, CGRectContainsPoint(picker.adjustmentStartRect, picker.dragStart), YES)];
+    }
 }
-- (void)rightMouseDown:(NSEvent *)event { self.rightPressed = YES; self.cancelOnRelease = YES; }
+- (void)rightMouseDown:(NSEvent *)event {
+    self.picker.pressedMouseButtons |= 2;
+    self.picker.cancelOnMouseRelease = YES;
+}
 - (void)mouseDragged:(NSEvent *)event {
-    if (self.leftPressed && !self.cancelOnRelease) [self.picker updateSelectionAtPoint:[self capturePointForEvent:event]];
+    CIIPCapturePicker *picker = self.picker;
+    if (!self.leftPressed || picker.cancelOnMouseRelease) return;
+    [picker updateSelectionAtPoint:[self capturePointForEvent:event]];
+    if (picker.adjusting)
+        [self showAdjustmentCursor:captureAdjustmentCursor(picker.adjustmentEdges, CGRectContainsPoint(picker.adjustmentStartRect, picker.dragStart), YES)];
 }
 - (void)rightMouseDragged:(NSEvent *)event {}
 - (void)completeMouseGesture {
-    if (self.leftPressed || self.rightPressed) return;
-    BOOL cancel = self.cancelOnRelease; self.cancelOnRelease = NO;
-    if (cancel) [self.picker finish:NO]; else [self.picker completeSelectionGesture];
+    CIIPCapturePicker *picker = self.picker;
+    if (picker.pressedMouseButtons) return;
+    BOOL cancel = picker.cancelOnMouseRelease, confirm = picker.selectionReleasePending;
+    picker.cancelOnMouseRelease = NO;
+    picker.selectionReleasePending = NO;
+    if (cancel) [picker finish:NO];
+    else if (confirm) [picker completeSelectionGesture];
 }
 - (void)mouseUp:(NSEvent *)event {
     if (!self.leftPressed) return;
-    if (!self.cancelOnRelease) [self.picker updateSelectionAtPoint:[self capturePointForEvent:event]];
-    self.leftPressed = NO; [self completeMouseGesture];
+    CIIPCapturePicker *picker = self.picker;
+    if (!picker.cancelOnMouseRelease) [picker updateSelectionAtPoint:[self capturePointForEvent:event]];
+    picker.pressedMouseButtons &= ~(NSUInteger)1;
+    picker.selectionReleasePending = YES;
+    [self completeMouseGesture];
+    if (picker.adjusting && !picker.finished) [self mouseMoved:event];
 }
 - (void)rightMouseUp:(NSEvent *)event {
     if (!self.rightPressed) return;
-    self.rightPressed = NO; [self completeMouseGesture];
+    self.picker.pressedMouseButtons &= ~(NSUInteger)2;
+    [self completeMouseGesture];
 }
+- (void)otherMouseDown:(NSEvent *)event {
+    NSInteger button = event.buttonNumber;
+    if (button >= 2 && button < (NSInteger)(sizeof(NSUInteger) * 8))
+        self.picker.pressedMouseButtons |= (NSUInteger)1 << button;
+}
+- (void)otherMouseDragged:(NSEvent *)event {}
+- (void)otherMouseUp:(NSEvent *)event {
+    NSInteger button = event.buttonNumber;
+    if (button >= 2 && button < (NSInteger)(sizeof(NSUInteger) * 8))
+        self.picker.pressedMouseButtons &= ~((NSUInteger)1 << button);
+    [self completeMouseGesture];
+}
+// Consume wheel, gesture and pressure events here instead of forwarding them.
+- (void)scrollWheel:(NSEvent *)event {}
+- (void)magnifyWithEvent:(NSEvent *)event {}
+- (void)smartMagnifyWithEvent:(NSEvent *)event {}
+- (void)rotateWithEvent:(NSEvent *)event {}
+- (void)swipeWithEvent:(NSEvent *)event {}
+- (void)beginGestureWithEvent:(NSEvent *)event {}
+- (void)endGestureWithEvent:(NSEvent *)event {}
+- (void)pressureChangeWithEvent:(NSEvent *)event {}
 - (void)keyDown:(NSEvent *)event {
-    if (self.leftPressed || self.rightPressed) {
-        if (event.keyCode == 53) self.cancelOnRelease = YES;
+    if (self.picker.pressedMouseButtons) {
+        if (event.keyCode == 53) self.picker.cancelOnMouseRelease = YES;
         return;
     }
     [self.picker keyDown:event];
@@ -402,16 +557,71 @@ static void positionMeasurementBadge(CALayer *plate, NSString *text, CGPoint cen
     [_selectionClock invalidate]; [_selectionClock release]; _selectionClock = nil;
 }
 - (void)viewWillMoveToWindow:(NSWindow *)newWindow {
-    if (!newWindow) [self stopSelectionAnimation];
+    if (!newWindow) { [self stopSelectionAnimation]; [self handoffAdjustmentCursor]; }
     [super viewWillMoveToWindow:newWindow];
 }
-- (void)dealloc { [self stopSelectionAnimation]; [_pointerTrackingArea release]; [_drawnLayout release]; [super dealloc]; }
+- (void)dealloc { [self stopSelectionAnimation]; [_adjustmentCursor release]; [_pointerTrackingArea release]; [_drawnLayout release]; [super dealloc]; }
 - (CGPoint)measurementPointInView:(CGPoint)point {
     NSRect window = self.window.frame;
     return CGPointMake(point.x - NSMinX(window), self.picker.desktopTop - point.y - NSMinY(window));
 }
 - (CGRect)measurementRectInView:(CGRect)rect {
     return (CGRect){[self measurementPointInView:CGPointMake(CGRectGetMinX(rect), CGRectGetMaxY(rect))], rect.size};
+}
+- (void)copyAdjustment:(id)sender { [self.picker completeAdjustment:YES]; }
+- (void)confirmAdjustment:(id)sender { [self.picker completeAdjustment:NO]; }
+- (void)positionAdjustmentControls:(CGRect)selected {
+    CIIPCapturePicker *picker = self.picker;
+    BOOL show = !picker.quickToolbar && picker.adjusting && !picker.draggingSelection && usableCaptureRect(selected) &&
+        [picker adjustmentControlsPanel] == self.window;
+    if (!show) { _adjustmentControls.hidden = YES; return; }
+    if (!_adjustmentControls) {
+        _adjustmentControls = [[[NSVisualEffectView alloc] initWithFrame:NSMakeRect(0, 0, 112, 36)] autorelease];
+        _adjustmentControls.material = NSVisualEffectMaterialPopover;
+        _adjustmentControls.blendingMode = NSVisualEffectBlendingModeBehindWindow;
+        _adjustmentControls.state = NSVisualEffectStateActive;
+        _adjustmentControls.wantsLayer = YES; _adjustmentControls.layer.cornerRadius = 8;
+        _adjustmentControls.layer.masksToBounds = YES;
+        NSImage *copyImage = [NSImage imageWithSystemSymbolName:@"doc.on.doc" accessibilityDescription:nil];
+        NSButton *copy = [NSButton buttonWithTitle:@"复制" image:copyImage target:self action:@selector(copyAdjustment:)];
+        copy.frame = NSMakeRect(5, 5, 65, 26); copy.identifier = @"capture-copy";
+        copy.toolTip = @"复制选区并关闭";
+        [copy setAccessibilityLabel:copy.toolTip];
+        NSImage *check = [NSImage imageWithSystemSymbolName:@"checkmark" accessibilityDescription:nil];
+        NSButton *confirm = [NSButton buttonWithImage:check target:self action:@selector(confirmAdjustment:)];
+        confirm.frame = NSMakeRect(74, 5, 33, 26); confirm.identifier = @"capture-confirm";
+        confirm.toolTip = @"截图 · Return";
+        [confirm setAccessibilityLabel:@"确认截图"];
+        [_adjustmentControls addSubview:copy]; [_adjustmentControls addSubview:confirm];
+        [self addSubview:_adjustmentControls];
+    }
+    NSRect frame = _adjustmentControls.frame;
+    CGFloat x = NSMaxX(selected) - NSWidth(frame);
+    CGFloat y = NSMinY(selected) - NSHeight(frame) - 8;
+    if (y < 6) y = NSMaxY(selected) + 8;
+    if (y + NSHeight(frame) > NSHeight(self.bounds) - 6) y = NSMinY(selected) + 8;
+    frame.origin.x = MAX(6, MIN(x, NSWidth(self.bounds) - NSWidth(frame) - 6));
+    frame.origin.y = MAX(6, MIN(y, NSHeight(self.bounds) - NSHeight(frame) - 6));
+    _adjustmentControls.frame = frame;
+    _adjustmentControls.hidden = NO;
+}
+- (void)drawAdjustmentHandles:(CGRect)rect {
+    if (!_adjustmentHandles) {
+        _adjustmentHandles = [CAShapeLayer layer];
+        [self.layer insertSublayer:_adjustmentHandles above:_outline];
+    }
+    _adjustmentHandles.frame = self.bounds;
+    _adjustmentHandles.fillColor = NSColor.windowBackgroundColor.CGColor;
+    _adjustmentHandles.strokeColor = NSColor.keyboardFocusIndicatorColor.CGColor;
+    _adjustmentHandles.lineWidth = 1;
+    CGMutablePathRef path = CGPathCreateMutable();
+    CGFloat xs[] = {CGRectGetMinX(rect), CGRectGetMidX(rect), CGRectGetMaxX(rect)};
+    CGFloat ys[] = {CGRectGetMinY(rect), CGRectGetMidY(rect), CGRectGetMaxY(rect)};
+    for (NSUInteger x = 0; x < 3; x++) for (NSUInteger y = 0; y < 3; y++) {
+        if (x == 1 && y == 1) continue;
+        CGPathAddRoundedRect(path, NULL, CGRectMake(xs[x] - 3, ys[y] - 3, 6, 6), 1, 1);
+    }
+    _adjustmentHandles.path = path; CGPathRelease(path);
 }
 - (void)drawMeasurementLayout:(CGRect)bounds scale:(CGFloat)scale pointerHere:(BOOL)pointerHere {
     NSArray *children = self.picker.measurementLayoutChildren;
@@ -563,6 +773,7 @@ static void positionMeasurementBadge(CALayer *plate, NSString *text, CGPoint cen
     _measurementLines.path = path; CGPathRelease(path);
 }
 - (void)drawSelectionRect:(CGRect)selected updateDecorations:(BOOL)updateDecorations {
+    CIIPCapturePicker *picker = self.picker;
     BOOL valid = usableCaptureRect(selected);
     [CATransaction begin]; [CATransaction setDisableActions:YES];
     CGMutablePathRef shade = CGPathCreateMutable(); CGPathAddRect(shade, NULL, NSRectToCGRect(self.bounds));
@@ -570,28 +781,36 @@ static void positionMeasurementBadge(CALayer *plate, NSString *text, CGPoint cen
     if (valid) {
         CGPathAddRect(shade, NULL, selected);
         CGRect outline = selected;
-        if (self.picker.measurementMode && !_selectionClock) outline = [self measurementRectInView:[self.picker measurementFrame]];
+        if (picker.adjusting) outline = [self measurementRectInView:picker.rect];
+        else if (picker.measurementMode && !_selectionClock) outline = [self measurementRectInView:[picker measurementFrame]];
         CGFloat inset = MIN(1, MIN(outline.size.width, outline.size.height) / 4);
         CGPathAddRect(border, NULL, CGRectInset(outline, inset, inset));
     }
     _shade.path = shade; _outline.path = border;
+    _outline.lineDashPattern = picker.adjusting ? @[@5, @3] : nil;
     CGPathRelease(shade); CGPathRelease(border);
-    _dimensionPlate.hidden = !self.picker.elementMode || !valid ||
-        (self.picker.measurementMode && !NSPointInRect([self measurementPointInView:self.picker.point], self.bounds));
+    if (picker.adjusting && valid) [self drawAdjustmentHandles:[self measurementRectInView:picker.rect]];
+    _adjustmentHandles.hidden = !picker.adjusting || !valid;
+    _dimensionPlate.hidden = (!picker.elementMode && !picker.areaMode) || !valid ||
+        (picker.measurementMode && !NSPointInRect([self measurementPointInView:picker.point], self.bounds)) ||
+        (picker.adjusting && [picker adjustmentControlsPanel] != self.window);
     if (valid) {
         CGFloat margin = CGRectGetWidth(_dimensionPlate.bounds) / 2 + 4;
         CGFloat x = MAX(margin, MIN(CGRectGetMidX(selected), self.bounds.size.width - margin));
         CGFloat y = CGRectGetMinY(selected) - 18;
         BOOL putAbove = NO;
-        if (self.picker.measurementMode && self.picker.measurementReference.count) {
+        if (picker.adjusting) {
+            putAbove = CGRectGetMaxY(selected) + 32 <= self.bounds.size.height;
+        } else if (picker.measurementMode && picker.measurementReference.count) {
             CGRect reference = NSRectToCGRect([self.picker.measurementReference[0][@"frame"] rectValue]);
             putAbove = CGRectGetMaxY([self.picker measurementFrame]) <= CGRectGetMinY(reference) && CGRectGetMaxY(selected) + 36 <= self.bounds.size.height;
         }
         if (putAbove || y < 18) y = MIN(self.bounds.size.height - 18, CGRectGetMaxY(selected) + 18);
         _dimensionPlate.position = CGPointMake(x, y);
     }
-    if (self.picker.measurementMode && (updateDecorations || !_selectionClock)) [self drawMeasurement];
+    if (picker.measurementMode && (updateDecorations || !_selectionClock)) [self drawMeasurement];
     [CATransaction commit];
+    if (picker.adjusting) [self positionAdjustmentControls:selected];
 }
 - (void)selectionTick:(id)sender {
     if (!self.window || self.picker.finished) { [self stopSelectionAnimation]; return; }
@@ -632,7 +851,7 @@ static void positionMeasurementBadge(CALayer *plate, NSString *text, CGPoint cen
         selected = CGRectIntersection(NSRectToCGRect(self.bounds), CGRectMake(rect.origin.x - self.window.frame.origin.x,
             picker.desktopTop - CGRectGetMaxY(rect) - self.window.frame.origin.y, rect.size.width, rect.size.height));
     }
-    BOOL follow = animated && picker.elementMode && usableCaptureRect(selected) && usableCaptureRect(_displayedSelection) &&
+    BOOL follow = animated && picker.elementMode && !picker.adjusting && usableCaptureRect(selected) && usableCaptureRect(_displayedSelection) &&
         picker.selectionDuration > 0 && ![self reduceSelectionMotion];
     // AX providers can move a stationary frame by fractions of a point. Keep the visual target stable;
     // the picker's semantic rectangle and its pixel dimensions continue to use the exact current bounds.
@@ -644,7 +863,8 @@ static void positionMeasurementBadge(CALayer *plate, NSString *text, CGPoint cen
     _outline.lineWidth = NSWorkspace.sharedWorkspace.accessibilityDisplayShouldIncreaseContrast ? 3 : 2;
     _dimensionPlate.backgroundColor = NSColor.windowBackgroundColor.CGColor;
     _dimensions.contentsScale = self.window.backingScaleFactor ?: 1;
-    NSString *dimensions = picker.measurementMode && usableCaptureRect(rect) ? measurementDimensions(rect) :
+    BOOL spansDisplays = picker.adjusting && !CGRectContainsRect(capturePanelRect((NSPanel *)self.window, picker.desktopTop), rect);
+    NSString *dimensions = (picker.measurementMode || spansDisplays) && usableCaptureRect(rect) ? measurementDimensions(rect) :
         captureSelectionDimensions(rect, self.window.backingScaleFactor ?: 1);
     NSAttributedString *dimensionText = [[[NSAttributedString alloc] initWithString:dimensions
         attributes:@{NSFontAttributeName:[NSFont monospacedDigitSystemFontOfSize:12 weight:NSFontWeightMedium], NSForegroundColorAttributeName:NSColor.labelColor}] autorelease];
@@ -672,42 +892,125 @@ static void positionMeasurementBadge(CALayer *plate, NSString *text, CGPoint cen
 }
 - (void)dealloc {
     [_targetWindow release]; [_elements release]; [_measurementReference release]; [_measurementLayoutTarget release];
-    [_measurementLayoutChildren release]; [_applications release]; [_ancestorProposal release]; [_appIcon release]; [_appName release]; [_panels release]; [_timer release];
+    [_measurementLayoutChildren release]; [_applications release]; [_ancestorProposal release]; [_appIcon release]; [_appName release]; [_panels release]; [_timer release]; [_quickToolbar release];
+    [_frozenFrames release]; [_frozenDisplayRects release];
     [super dealloc];
 }
 - (void)redraw { [self redrawAnimated:YES]; }
+- (NSPanel *)adjustmentControlsPanel {
+    NSPanel *best = nil;
+    CGFloat largest = 0;
+    for (NSPanel *panel in self.panels) {
+        CGRect visible = CGRectIntersection(self.rect, capturePanelRect(panel, self.desktopTop));
+        if (!usableCaptureRect(visible)) continue;
+        CGFloat area = CGRectGetWidth(visible) * CGRectGetHeight(visible);
+        if (area > largest) { largest = area; best = panel; }
+    }
+    return best;
+}
+- (void)positionQuickToolbar {
+    NSWindow *toolbar = self.quickToolbar;
+    if (!toolbar) return;
+    NSPanel *panel = self.adjusting && !self.draggingSelection ? [self adjustmentControlsPanel] : nil;
+    if (!panel) {
+        if (toolbar.isVisible) [toolbar orderOut:nil];
+        return;
+    }
+    NSRect bounds = panel.frame;
+    NSRect selected = NSIntersectionRect(bounds, NSMakeRect(CGRectGetMinX(self.rect), self.desktopTop - CGRectGetMaxY(self.rect),
+        CGRectGetWidth(self.rect), CGRectGetHeight(self.rect)));
+    CGFloat width = MIN(704, NSWidth(bounds) - 12), height = 90;
+    CGFloat x = NSMidX(selected) - width / 2;
+    CGFloat y = NSMinY(selected) - height - 8;
+    if (y < NSMinY(bounds) + 6) y = NSMaxY(selected) + 8;
+    if (y + height > NSMaxY(bounds) - 6) y = NSMinY(selected) + 8;
+    NSRect frame = NSMakeRect(MAX(NSMinX(bounds) + 6, MIN(x, NSMaxX(bounds) - width - 6)),
+        MAX(NSMinY(bounds) + 6, MIN(y, NSMaxY(bounds) - height - 6)), width, height);
+    if (!NSEqualRects(frame, toolbar.frame)) [toolbar setFrame:frame display:YES];
+    setQuickToolbarMaterial(toolbar, NSMakeRect(4, 3, MAX(0, width - 8), height - 6), NSViewNotSizable);
+    NSInteger level = panel.level + 1;
+    toolbar.acceptsMouseMovedEvents = YES;
+    if (!toolbar.isVisible || toolbar.level != level) {
+        toolbar.collectionBehavior = panel.collectionBehavior;
+        toolbar.level = level;
+        [toolbar orderFrontRegardless];
+    }
+}
+- (void)updateQuickToolbarCursorForWindow:(NSWindow *)window {
+    NSWindow *toolbar = self.quickToolbar;
+    if (window != toolbar || !toolbar.isVisible || toolbar.isKeyWindow) return;
+    // The event's window is authoritative. The live pointer can be ahead of the event.
+    // WebKit can leave the overlay cursor in place while this window is non-key.
+    NSCursor *cursor = NSCursor.currentCursor;
+    if (cursor != NSCursor.arrowCursor && cursor != NSCursor.pointingHandCursor) [NSCursor.arrowCursor set];
+}
+- (void)enterAdjustment {
+    if (!usableCaptureRect(self.rect) || ![self adjustmentControlsPanel]) return;
+    self.adjusting = YES; self.pending = NO; self.draggingSelection = NO;
+    self.elements = nil; self.elementIndex = 0; self.targetWindow = nil;
+    [self clearAncestorProposal];
+    [self.timer invalidate]; self.timer = nil;
+    for (NSPanel *panel in self.panels) [panel invalidateCursorRectsForView:panel.contentView];
+    [self redrawAnimated:NO];
+}
 - (void)beginSelectionAtPoint:(CGPoint)point {
-    if (!self.elementMode || self.finished) return;
+    if ((!self.elementMode && !self.areaMode) || self.finished) return;
     self.trackingSelection = YES; self.draggingSelection = NO;
     self.dragStart = point; self.dragPoint = point;
+    if (self.adjusting) {
+        self.adjustmentStartRect = self.rect;
+        self.adjustmentEdges = captureAdjustmentEdge(self.rect, point, 7);
+    }
 }
 - (void)updateSelectionAtPoint:(CGPoint)point {
     if (!self.trackingSelection || self.finished || !isfinite(point.x) || !isfinite(point.y)) return;
     self.dragPoint = point;
     if (self.measurementMode) return;
-    if (!self.draggingSelection && hypot(point.x - self.dragStart.x, point.y - self.dragStart.y) < 4) return;
+    BOOL transform = self.adjusting && (self.adjustmentEdges || CGRectContainsPoint(self.adjustmentStartRect, self.dragStart));
+    if (!self.draggingSelection && hypot(point.x - self.dragStart.x, point.y - self.dragStart.y) < (transform ? 1 : 4)) return;
     if (!self.draggingSelection) {
         self.draggingSelection = YES; self.pending = NO; self.elements = nil; self.elementIndex = 0;
         self.targetWindow = nil; [self clearAncestorProposal];
     }
     CGRect bounds = CGRectNull;
     for (NSPanel *panel in self.panels) {
-        CGRect frame = CGRectMake(panel.frame.origin.x, self.desktopTop - NSMaxY(panel.frame), panel.frame.size.width, panel.frame.size.height);
+        CGRect frame = capturePanelRect(panel, self.desktopTop);
         if (usableCaptureRect(frame)) bounds = CGRectUnion(bounds, frame);
     }
     CGRect rect = CGRectMake(MIN(self.dragStart.x, point.x), MIN(self.dragStart.y, point.y),
         fabs(point.x - self.dragStart.x), fabs(point.y - self.dragStart.y));
-    self.rect = CGRectIntersection(rect, bounds); self.point = point;
+    if (transform) rect = captureAdjustedRect(self.adjustmentStartRect, self.dragStart, point, bounds, self.adjustmentEdges);
+    else rect = CGRectIntersection(rect, bounds);
+    self.rect = rect; self.point = point;
     [self redrawAnimated:NO];
 }
 - (void)completeSelectionGesture {
     self.trackingSelection = NO;
+    if (self.adjusting) {
+        if (self.draggingSelection && ![self adjustmentControlsPanel]) self.rect = self.adjustmentStartRect;
+        self.draggingSelection = NO; [self redrawAnimated:NO];
+        return;
+    }
+    if (self.draggingSelection) {
+        [self enterAdjustment];
+        if (!self.adjusting) {
+            self.draggingSelection = NO; self.rect = CGRectNull;
+            if (self.areaMode) [self redrawAnimated:NO];
+            else { self.point = CGPointMake(INFINITY, INFINITY); [self sample]; }
+        }
+        return;
+    }
+    if (self.areaMode) return;
     if (!self.elementMode) { [self confirm]; return; }
-    if (self.draggingSelection) { [self finish:usableCaptureRect(self.rect)]; return; }
     // Sub-threshold hand movement is still a click on the highlighted element.
     if (!self.pending && usableCaptureRect(self.rect) && CGRectContainsPoint(self.rect, self.dragPoint)) self.point = self.dragPoint;
     else if (self.pending && !self.querying) self.point = CGPointMake(INFINITY, INFINITY);
     [self confirm];
+}
+- (void)completeAdjustment:(BOOL)copyOnly {
+    if (!self.adjusting || self.trackingSelection || ![self adjustmentControlsPanel]) return;
+    self.copyOnly = copyOnly;
+    [self finish:YES];
 }
 - (CGRect)measurementFrame {
     if (!self.elements.count) return CGRectNull;
@@ -806,6 +1109,8 @@ static void positionMeasurementBadge(CALayer *plate, NSString *text, CGPoint cen
 - (void)redrawAnimated:(BOOL)animated {
     NSString *detail = self.elementMode ? (self.elements.count ? self.elements[self.elementIndex][@"label"] : self.pending ? @"正在识别元素" : @"此处没有可识别元素") : self.targetWindow[(id)kCGWindowName];
     NSString *label = [NSString stringWithFormat:@"%@，%@", self.appName ?: (self.elementMode ? @"选择屏幕元素" : @"选择应用窗口"), detail ?: @"移动指针选择目标"];
+    if (self.areaMode) label = @"拖动框选截图区域";
+    if (self.adjusting) label = @"调整截图选区，拖动移动，拖动边角调整大小，框外拖动重新框选。按回车截图，Esc 取消。";
     if (self.measurementMode) {
         [self refreshMeasurementLayout];
         CGRect frame = [self measurementFrame];
@@ -826,9 +1131,10 @@ static void positionMeasurementBadge(CALayer *plate, NSString *text, CGPoint cen
         [panel.contentView setAccessibilityLabel:label];
         [(CIIPCaptureSelectionView *)panel.contentView updateSelectionAnimated:animated];
     }
+    [self positionQuickToolbar];
 }
 - (void)sample {
-    if (self.finished || self.trackingSelection) return;
+    if (self.finished || self.trackingSelection || self.areaMode || self.adjusting) return;
     NSPoint mouse = NSEvent.mouseLocation;
     CGPoint point = CGPointMake(mouse.x, self.desktopTop - mouse.y);
     if (CGPointEqualToPoint(point, self.point)) return;
@@ -876,7 +1182,7 @@ static void positionMeasurementBadge(CALayer *plate, NSString *text, CGPoint cen
             NSArray *elements = captureElementsKeepingLeaf(captureElementsAtPoint(pid, point, clip, applications), previous, point, clip);
             dispatch_async(dispatch_get_main_queue(), ^{
                 self.querying = NO;
-                if (self.finished || self.draggingSelection) return;
+                if (self.finished || self.draggingSelection || self.adjusting) return;
                 BOOL sameLeaf = elements.count && CGRectContainsPoint(NSRectToCGRect([elements[0][@"rect"] rectValue]), self.point);
                 if ((!CGPointEqualToPoint(point, self.point) && !sameLeaf) || !sameCaptureWindow(window, self.targetWindow)) {
                     self.point = CGPointMake(INFINITY, INFINITY); [self sample]; return;
@@ -918,6 +1224,8 @@ static void positionMeasurementBadge(CALayer *plate, NSString *text, CGPoint cen
 }
 - (void)confirm {
     if (self.finished) return;
+    if (self.adjusting) { [self completeAdjustment:NO]; return; }
+    if (self.areaMode) return;
     [self sample];
     if (self.pending || !usableCaptureRect(self.rect)) { NSBeep(); return; }
     // A closed or moved target must be selected again, never captured using stale bounds.
@@ -933,11 +1241,20 @@ static void positionMeasurementBadge(CALayer *plate, NSString *text, CGPoint cen
         if (!usableCaptureRect([self measurementFrame])) { NSBeep(); return; }
         self.measurementReference = [self.elements subarrayWithRange:NSMakeRange(self.elementIndex, self.elements.count - self.elementIndex)];
         [self redrawAnimated:NO];
-    } else [self finish:YES];
+    } else if (self.elementMode) [self enterAdjustment];
+    else [self finish:YES];
 }
 - (void)keyDown:(NSEvent *)event {
     if (event.keyCode == 53) { [self finish:NO]; return; }
-    if (event.keyCode == 36 || event.keyCode == 76) { [self confirm]; return; }
+    if (self.adjusting && (event.modifierFlags & NSEventModifierFlagCommand) &&
+        [event.charactersIgnoringModifiers.lowercaseString isEqualToString:@"c"]) {
+        if (!event.isARepeat) [self completeAdjustment:YES];
+        return;
+    }
+    if (event.keyCode == 36 || event.keyCode == 76) {
+        if (!event.isARepeat) [self confirm];
+        return;
+    }
     if (event.keyCode == 126 && self.ancestorProposal.count) {
         [self sample];
         if ([self acceptAncestorProposal]) { [self redrawAnimated:NO]; return; }
@@ -950,10 +1267,20 @@ static void positionMeasurementBadge(CALayer *plate, NSString *text, CGPoint cen
 }
 - (void)screenChanged:(NSNotification *)notification { [self finish:NO]; }
 - (void)finish:(BOOL)accepted {
+    [self finish:accepted error:nil];
+}
+- (void)finish:(BOOL)accepted error:(NSString *)failure {
     if (self.finished) return;
     self.finished = YES; [self.timer invalidate]; self.timer = nil;
     [self clearAncestorProposal];
     [[NSNotificationCenter defaultCenter] removeObserver:self];
+    if (self.quickToolbarMouseMonitor) {
+        [NSEvent removeMonitor:self.quickToolbarMouseMonitor]; self.quickToolbarMouseMonitor = nil;
+    }
+    [self.quickToolbar orderOut:nil];
+    self.quickToolbar.level = self.quickToolbarLevel;
+    self.quickToolbar.collectionBehavior = self.quickToolbarBehavior;
+    self.quickToolbar.acceptsMouseMovedEvents = self.quickToolbarAcceptedMouseMoves;
     for (NSPanel *panel in self.panels) {
         [(CIIPCaptureSelectionView *)panel.contentView stopSelectionAnimation];
         [panel close];
@@ -961,46 +1288,129 @@ static void positionMeasurementBadge(CALayer *plate, NSString *text, CGPoint cen
     [self.panels removeAllObjects];
     accepted = accepted && !self.measurementMode;
     CGRect rect = accepted ? self.rect : CGRectZero;
-    ciip_go_capture_selection(self.token, accepted ? [self.targetWindow[(id)kCGWindowNumber] unsignedIntValue] : 0,
-        rect.origin.x, rect.origin.y, rect.size.width, rect.size.height);
     activeCapturePicker = nil;
+    if (failure) {
+        ciip_go_capture_area_image(self.token, 0, 0, 0, 0, 0, NULL, 0, failure.UTF8String);
+    } else if (accepted && self.frozenFrames) {
+        NSDictionary *frames = self.frozenFrames, *displayRects = self.frozenDisplayRects;
+        uintptr_t token = self.token;
+        BOOL copyOnly = self.copyOnly;
+        CGRect crop = CGRectIntegral(rect);
+        dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+            @autoreleasepool {
+                NSString *error = nil;
+                NSData *png = ciip_crop_desktop_frames(frames, displayRects, crop, &error);
+                ciip_go_capture_area_image(token, crop.origin.x, crop.origin.y, crop.size.width, crop.size.height,
+                    copyOnly, png.bytes, png.length, error.UTF8String);
+            }
+        });
+        self.frozenFrames = nil; self.frozenDisplayRects = nil;
+    } else {
+        ciip_go_capture_selection(self.token, accepted ? [self.targetWindow[(id)kCGWindowNumber] unsignedIntValue] : 0,
+            rect.origin.x, rect.origin.y, rect.size.width, rect.size.height, accepted && self.copyOnly);
+    }
     [self autorelease];
 }
+- (void)showSelectionPanels:(NSArray<NSScreen *> *)screens {
+    for (NSScreen *screen in screens) {
+        NSPanel *panel = [[[CIIPCaptureSelectionPanel alloc] initWithContentRect:screen.frame styleMask:NSWindowStyleMaskBorderless | NSWindowStyleMaskNonactivatingPanel backing:NSBackingStoreBuffered defer:NO] autorelease];
+        NSNumber *number = screen.deviceDescription[@"NSScreenNumber"];
+        CGImageRef frozenImage = number ? (CGImageRef)self.frozenFrames[number] : NULL;
+        panel.releasedWhenClosed = NO; panel.opaque = frozenImage != NULL;
+        panel.backgroundColor = frozenImage ? NSColor.blackColor : NSColor.clearColor;
+        panel.hasShadow = NO; panel.hidesOnDeactivate = NO; panel.level = NSScreenSaverWindowLevel;
+        panel.acceptsMouseMovedEvents = YES; panel.ignoresMouseEvents = NO;
+        panel.movable = NO; panel.movableByWindowBackground = NO;
+        panel.title = self.measurementMode ? @"元素测量" : self.elementMode ? @"元素截图" : self.areaMode ? @"区域截图" : @"窗口截图";
+        panel.collectionBehavior = NSWindowCollectionBehaviorCanJoinAllSpaces | NSWindowCollectionBehaviorFullScreenAuxiliary;
+        CIIPCaptureSelectionView *view = [[[CIIPCaptureSelectionView alloc] initWithFrame:NSMakeRect(0, 0, screen.frame.size.width, screen.frame.size.height)] autorelease];
+        view.picker = self; panel.contentView = view;
+        if (frozenImage) [view setFrozenImage:frozenImage];
+        [view setAccessibilityElement:YES]; [view setAccessibilityRole:NSAccessibilityGroupRole];
+        [view setAccessibilityHelp:self.measurementMode ? @"悬停查看元素和子元素布局，方向键上下选择层级，点击或回车锁定对比参照，Esc 退出" :
+            self.elementMode ? @"点击或回车选定元素，拖动框选区域，方向键上下选择元素层级，Esc 取消" :
+            self.areaMode ? @"拖动框选区域，Esc 取消" : @"点击或回车截图，Esc 取消"];
+        [panel makeFirstResponder:view]; [self.panels addObject:panel];
+    }
+    if (self.areaMode) [self redrawAnimated:NO];
+    for (NSPanel *panel in self.panels) {
+        [panel orderFrontRegardless];
+        if (NSPointInRect(NSEvent.mouseLocation, panel.frame)) [panel makeKeyWindow];
+    }
+    if (!self.areaMode) {
+        [self sample];
+        self.timer = [NSTimer scheduledTimerWithTimeInterval:.2 target:self selector:@selector(sample) userInfo:nil repeats:YES];
+    }
+}
 @end
+
+static NSDictionary<NSNumber *, NSValue *> *captureDisplayRects(NSArray<NSScreen *> *screens, CGFloat desktopTop) {
+    NSMutableDictionary *rects = [NSMutableDictionary dictionaryWithCapacity:screens.count];
+    for (NSScreen *screen in screens) {
+        NSNumber *number = screen.deviceDescription[@"NSScreenNumber"];
+        NSRect frame = screen.frame;
+        if (number)
+            rects[number] = [NSValue valueWithRect:NSMakeRect(NSMinX(frame), desktopTop - NSMaxY(frame), NSWidth(frame), NSHeight(frame))];
+    }
+    return rects;
+}
 
 int ciip_element_permission(void) {
     return AXIsProcessTrustedWithOptions((CFDictionaryRef)@{(id)kAXTrustedCheckOptionPrompt:@YES});
 }
 
-int ciip_start_capture_selection(uintptr_t token, int mode, double duration) {
-    if (activeCapturePicker || !NSScreen.screens.count) return 0;
+int ciip_start_capture_selection(uintptr_t token, int mode, double duration, uintptr_t toolbarHandle) {
+    NSArray<NSScreen *> *screens = NSScreen.screens;
+    if (activeCapturePicker || !screens.count) return 0;
     CIIPCapturePicker *picker = [[CIIPCapturePicker alloc] init];
-    activeCapturePicker = picker; picker.token = token; picker.elementMode = mode != 0; picker.measurementMode = mode == 2;
+    activeCapturePicker = picker; picker.token = token;
+    picker.elementMode = mode == 1 || mode == 2; picker.measurementMode = mode == 2; picker.areaMode = mode == 3;
     picker.selectionDuration = duration;
-    picker.desktopTop = NSMaxY([NSScreen.screens[0] frame]);
-    for (NSScreen *screen in NSScreen.screens) {
-        NSPanel *panel = [[[CIIPCaptureSelectionPanel alloc] initWithContentRect:screen.frame styleMask:NSWindowStyleMaskBorderless | NSWindowStyleMaskNonactivatingPanel backing:NSBackingStoreBuffered defer:NO] autorelease];
-        panel.releasedWhenClosed = NO; panel.opaque = NO; panel.backgroundColor = NSColor.clearColor;
-        panel.hasShadow = NO; panel.hidesOnDeactivate = NO; panel.level = NSScreenSaverWindowLevel;
-        panel.acceptsMouseMovedEvents = YES;
-        panel.title = picker.measurementMode ? @"元素测量" : picker.elementMode ? @"元素截图" : @"窗口截图";
-        panel.collectionBehavior = NSWindowCollectionBehaviorCanJoinAllSpaces | NSWindowCollectionBehaviorFullScreenAuxiliary;
-        CIIPCaptureSelectionView *view = [[[CIIPCaptureSelectionView alloc] initWithFrame:NSMakeRect(0, 0, screen.frame.size.width, screen.frame.size.height)] autorelease];
-        view.picker = picker; panel.contentView = view;
-        [view setAccessibilityElement:YES]; [view setAccessibilityRole:NSAccessibilityGroupRole];
-        [view setAccessibilityHelp:picker.measurementMode ? @"悬停查看元素和子元素布局，方向键上下选择层级，点击或回车锁定对比参照，Esc 退出" :
-            picker.elementMode ? @"点击或回车截图，拖动框选区域，方向键上下选择元素层级，Esc 取消" : @"点击或回车截图，Esc 取消"];
-        [panel makeFirstResponder:view]; [picker.panels addObject:panel];
-        [panel orderFrontRegardless];
-        if (NSPointInRect(NSEvent.mouseLocation, screen.frame)) [panel makeKeyWindow];
+    picker.quickToolbar = (NSWindow *)toolbarHandle;
+    picker.quickToolbarLevel = picker.quickToolbar.level;
+    picker.quickToolbarBehavior = picker.quickToolbar.collectionBehavior;
+    picker.quickToolbarAcceptedMouseMoves = picker.quickToolbar.acceptsMouseMovedEvents;
+    if (picker.quickToolbar) {
+        [[NSNotificationCenter defaultCenter] addObserver:picker selector:@selector(screenChanged:) name:NSWindowWillCloseNotification object:picker.quickToolbar];
+        picker.quickToolbarMouseMonitor = [NSEvent addLocalMonitorForEventsMatchingMask:NSEventMaskMouseMoved handler:^NSEvent *(NSEvent *event) {
+            [picker updateQuickToolbarCursorForWindow:event.window];
+            return event;
+        }];
     }
+    picker.desktopTop = NSMaxY(screens.firstObject.frame);
     [[NSNotificationCenter defaultCenter] addObserver:picker selector:@selector(screenChanged:) name:NSApplicationDidChangeScreenParametersNotification object:nil];
-    [picker sample];
-    // Pointer events drive selection; the low-frequency timer only covers missed tracking events.
-    picker.timer = [NSTimer scheduledTimerWithTimeInterval:.2 target:picker selector:@selector(sample) userInfo:nil repeats:YES];
+    if (picker.areaMode) {
+        NSDictionary *rects = captureDisplayRects(screens, picker.desktopTop);
+        [CATransaction flush];
+        ciip_capture_desktop_frames(rects.allKeys, ^(NSDictionary<NSNumber *, id> *frames, NSString *error) {
+            if (picker.finished || activeCapturePicker != picker) return;
+            NSArray<NSScreen *> *current = NSScreen.screens;
+            if (rects.count != screens.count || ![rects isEqualToDictionary:captureDisplayRects(current, NSMaxY(current.firstObject.frame))])
+                error = @"显示器已变化，请重新截图";
+            if (error || ![[NSSet setWithArray:frames.allKeys ?: @[]] isEqualToSet:[NSSet setWithArray:rects.allKeys]]) {
+                [picker finish:NO error:error ?: @"无法冻结屏幕画面"];
+                return;
+            }
+            picker.frozenFrames = frames; picker.frozenDisplayRects = rects;
+            [picker showSelectionPanels:current];
+        });
+    } else [picker showSelectionPanels:screens];
     return 1;
 }
 
 void ciip_cancel_capture_selection(uintptr_t token) {
     if (activeCapturePicker.token == token) [activeCapturePicker finish:NO];
+}
+
+BOOL ciip_area_selection_accepts_input(void) {
+    return activeCapturePicker.areaMode && activeCapturePicker.panels.count > 0;
+}
+
+int ciip_submit_capture_toolbar(uintptr_t toolbarHandle, int action) {
+    CIIPCapturePicker *picker = activeCapturePicker;
+    if (!picker.adjusting || picker.finished || picker.trackingSelection || picker.pressedMouseButtons || !toolbarHandle ||
+        picker.quickToolbar != (NSWindow *)toolbarHandle || action < 0 || action > 2 || ![picker adjustmentControlsPanel]) return 0;
+    if (action == 2) [picker finish:NO];
+    else [picker completeAdjustment:action == 1];
+    return 1;
 }

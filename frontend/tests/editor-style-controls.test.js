@@ -87,6 +87,28 @@ test('an explicitly red highlighter stays red on the next screenshot while the p
  fresh.choose('pen');assert.equal(fresh.annotation().color,'#347bc7');
 });
 
+test('style choices made on the selection toolbar reach the first annotation with untouched defaults preserved',async()=>{
+ for(const [tool,pickedColor,pickedStroke,wantColor,wantStroke]of [
+  ['pen','#347bc7',11,'#347bc7',11],
+  ['highlighter','#347bc7',11,'#347bc7',11],
+  ['highlighter','#347bc7',null,'#347bc7',20],
+  ['highlighter',null,11,'#e6a32b',11],
+ ]){
+  const backend=storage(),h=harness(backend);
+  h.context.quickEditor={selecting:true};
+  if(pickedColor!==null)h.color(pickedColor);
+  if(pickedStroke!==null)h.width(pickedStroke);
+  h.context.quickEditor=null;
+  await h.load();h.context.prepareQuickTool(tool);h.choose(tool);
+  assert.equal(h.annotation().color,wantColor,tool);
+  assert.equal(h.annotation().width,wantStroke,tool);
+  await h.flush();
+  const refreshed=harness(backend);await refreshed.load();refreshed.choose(tool);
+  assert.equal(refreshed.annotation().color,wantColor);
+  assert.equal(refreshed.annotation().width,wantStroke);
+ }
+});
+
 test('recoloring a selected old pen preserves its width and the pen default until width is explicitly changed',async()=>{
  const backend=storage(),h=harness(backend);await h.load();h.choose('pen');h.width(8);await h.flush();
  const old={id:'old-pen',type:'pen',points:[{x:20,y:20},{x:100,y:20}],color:'#c94632',width:40};

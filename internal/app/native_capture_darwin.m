@@ -6,21 +6,12 @@
 #import <ImageIO/ImageIO.h>
 #include <stdint.h>
 #include <math.h>
-#include <dlfcn.h>
+#import "screen_capture_kit_darwin.h"
 
 extern void ciip_go_capture_png(uintptr_t, void *, size_t, const char *, int);
 
 static const size_t nativeCaptureMaxPixels = 60000000;
 static const size_t nativeCaptureMaxBytes = 64 * 1024 * 1024;
-
-// The app also supports macOS 12.0, where ScreenCaptureKit is absent. Load this
-// public framework only on supported systems, without a mandatory dyld dependency.
-static BOOL loadNativeCaptureFramework(void) {
-    static dispatch_once_t once;
-    static void *framework;
-    dispatch_once(&once, ^{ framework = dlopen("/System/Library/Frameworks/ScreenCaptureKit.framework/ScreenCaptureKit", RTLD_LAZY | RTLD_LOCAL); });
-    return framework && NSClassFromString(@"SCScreenshotManager");
-}
 
 static BOOL nativeCaptureRectValid(CGRect rect) {
     return !CGRectIsNull(rect) && !CGRectIsInfinite(rect) && isfinite(rect.origin.x) && isfinite(rect.origin.y) &&
