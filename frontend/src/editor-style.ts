@@ -1,11 +1,12 @@
-import type {ArrowStyle,NumberStyle,RedactStyle} from './types.ts';
+import {rectangleFillStyles} from './types.ts';
+import type {ArrowStyle,NumberStyle,RectangleFillStyle,RedactStyle} from './types.ts';
 
 export interface EditorStyle {
  color:string;highlightColor:string;stroke:number;penStroke:number;highlightStroke:number;
- arrowStyle:ArrowStyle;numberStyle:NumberStyle;numberRadius:number;
+ arrowStyle:ArrowStyle;rectangleFillStyle:RectangleFillStyle;numberStyle:NumberStyle;numberRadius:number;
  redactStyle:RedactStyle;redactStrength:number;textSize:number;
 }
-export const defaultEditorStyle:Readonly<EditorStyle>={color:'#c94632',highlightColor:'#e6a32b',stroke:4,penStroke:4,highlightStroke:20,arrowStyle:'line',numberStyle:'filled',numberRadius:16,redactStyle:'blur',redactStrength:12,textSize:24};
+export const defaultEditorStyle:Readonly<EditorStyle>={color:'#c94632',highlightColor:'#e6a32b',stroke:4,penStroke:4,highlightStroke:20,arrowStyle:'line',rectangleFillStyle:'outline',numberStyle:'filled',numberRadius:16,redactStyle:'blur',redactStrength:12,textSize:24};
 const number=(value:unknown,min:number,max:number,fallback:number)=>typeof value==='number'&&Number.isFinite(value)&&value>=min&&value<=max?value:fallback;
 const option=<T extends string>(value:unknown,values:readonly T[],fallback:T):T=>values.includes(value as T)?value as T:fallback;
 export function normalizeEditorStyle(value:unknown):EditorStyle {
@@ -15,6 +16,7 @@ export function normalizeEditorStyle(value:unknown):EditorStyle {
   highlightColor:typeof p.highlightColor==='string'&&/^#[\da-f]{3}(?:[\da-f]{3})?$/i.test(p.highlightColor)?p.highlightColor:d.highlightColor,
   stroke:number(p.stroke,.5,200,d.stroke),penStroke:number(p.penStroke,.5,200,d.penStroke),highlightStroke:number(p.highlightStroke,.5,200,d.highlightStroke),
   arrowStyle:option(p.arrowStyle,['line','pointer','curved','tapered','direction'],d.arrowStyle),numberStyle:option(p.numberStyle,['filled','outline'],d.numberStyle),numberRadius:number(p.numberRadius,12,160,d.numberRadius),
+  rectangleFillStyle:option(p.rectangleFillStyle,rectangleFillStyles,d.rectangleFillStyle),
   redactStyle:option(p.redactStyle,['blur','pixelate','solid'],d.redactStyle),redactStrength:number(p.redactStrength,4,40,d.redactStrength),textSize:number(p.textSize,8,512,d.textSize),
  };
 }

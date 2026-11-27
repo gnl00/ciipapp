@@ -14,7 +14,9 @@ footer{height:36px;min-height:36px;background:var(--surface-footer);--app-region
 @media(max-width:900px){.properties{gap:9px;padding:0 14px}.properties .stroke-label{gap:5px}.properties .stroke-label input{width:56px}.tool-options{gap:8px}.tool-options label{gap:4px}.tool-options input[type=range]{width:48px}#delete kbd{display:none}.colors{gap:3px}}
 @media(prefers-reduced-transparency:reduce){:root{background:var(--surface-solid)}.toolbar{background:var(--surface)}footer{background:var(--surface-footer)}.properties{background:var(--surface-properties)}main,#canvas-scroll{background-color:var(--selection-soft)}.empty-state{background:var(--surface-solid)}}
 
-@media(max-width:900px){.segmented button{width:30px}.option-value{display:none}.text-instruction{font-size:10px}}
+#rectangle-style-label{min-width:3em}
+#rectangle-options:not([hidden])~.tool-hint{overflow:hidden;text-overflow:ellipsis}
+@media(max-width:900px){.segmented button{width:30px}.option-value:not(#rectangle-style-label){display:none}.text-instruction{font-size:10px}}
 
 /* An opaque page base keeps WebKit's in-page backdrop sampling stable.
    Quick editors and pins retain their own transparent window surfaces. */

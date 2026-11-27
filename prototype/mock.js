@@ -30,7 +30,7 @@ let qaPreferences = structuredClone(window.parent.ciipPrototypePreferences || {
   shortcuts:{area:'CmdOrCtrl+Shift+2', window:'CmdOrCtrl+Alt+3', element:'', screen:'CmdOrCtrl+Alt+4', pin:'CmdOrCtrl+Shift+P'},
 });
 qaPreferences.shortcuts.element ??= '';
-let qaEditorStyle=structuredClone(window.parent.ciipPrototypeEditorStyle||{color:'#c94632',highlightColor:'#e6a32b',stroke:4,penStroke:4,highlightStroke:20,arrowStyle:'line',numberStyle:'filled',numberRadius:16,redactStyle:'blur',redactStrength:12,textSize:24});
+let qaEditorStyle=structuredClone(window.parent.ciipPrototypeEditorStyle||{color:'#c94632',highlightColor:'#e6a32b',stroke:4,penStroke:4,highlightStroke:20,arrowStyle:'line',rectangleFillStyle:'outline',numberStyle:'filled',numberRadius:16,redactStyle:'blur',redactStrength:12,textSize:24});
 let nextPinID = 0;
 
 function shortcutStatus() {

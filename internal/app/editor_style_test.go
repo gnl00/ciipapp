@@ -23,18 +23,24 @@ func editorStyleService(t *testing.T) *CaptureService {
 
 func TestEditorStyleDefaultsMergeAndRestart(t *testing.T) {
 	s := editorStyleService(t)
-	defaults := EditorStyle{Color: "#c94632", Stroke: 4, PenStroke: 4, HighlightStroke: 20, HighlightColor: "#e6a32b", ArrowStyle: "line", NumberStyle: "filled", NumberRadius: 16, RedactStyle: "blur", RedactStrength: 12, TextSize: 24}
+	defaults := EditorStyle{Color: "#c94632", Stroke: 4, PenStroke: 4, HighlightStroke: 20, HighlightColor: "#e6a32b", ArrowStyle: "line", RectangleFillStyle: "outline", NumberStyle: "filled", NumberRadius: 16, RedactStyle: "blur", RedactStrength: 12, TextSize: 24}
 	if got := s.GetEditorStyle(); got != defaults {
 		t.Fatalf("missing file: %#v", got)
 	}
 	if got := (&CaptureService{}).GetEditorStyle(); got != defaults {
 		t.Fatalf("uninitialized service: %#v", got)
 	}
-	var patch EditorStylePatch
-	if err := json.Unmarshal([]byte(`{"color":"#AbC","stroke":8.5,"penStroke":0.5,"highlightStroke":200,"highlightColor":"#c94632","arrowStyle":"curved","numberStyle":"outline","numberRadius":160,"redactStyle":"pixelate","redactStrength":40,"textSize":512}`), &patch); err != nil {
+	if err := saveJSON(s.editorStylePath, map[string]any{"stroke": 8}); err != nil {
 		t.Fatal(err)
 	}
-	want := EditorStyle{Color: "#AbC", Stroke: 8.5, PenStroke: .5, HighlightStroke: 200, HighlightColor: "#c94632", ArrowStyle: "curved", NumberStyle: "outline", NumberRadius: 160, RedactStyle: "pixelate", RedactStrength: 40, TextSize: 512}
+	if got, err := readEditorStyle(s.editorStylePath); err != nil || got.RectangleFillStyle != "outline" || got.Stroke != 8 {
+		t.Fatalf("legacy style file: %#v, %v", got, err)
+	}
+	var patch EditorStylePatch
+	if err := json.Unmarshal([]byte(`{"color":"#AbC","stroke":8.5,"penStroke":0.5,"highlightStroke":200,"highlightColor":"#c94632","arrowStyle":"curved","rectangleFillStyle":"hatch","numberStyle":"outline","numberRadius":160,"redactStyle":"pixelate","redactStrength":40,"textSize":512}`), &patch); err != nil {
+		t.Fatal(err)
+	}
+	want := EditorStyle{Color: "#AbC", Stroke: 8.5, PenStroke: .5, HighlightStroke: 200, HighlightColor: "#c94632", ArrowStyle: "curved", RectangleFillStyle: "hatch", NumberStyle: "outline", NumberRadius: 160, RedactStyle: "pixelate", RedactStrength: 40, TextSize: 512}
 	got, err := s.SetEditorStyle(patch)
 	if err != nil || got != want {
 		t.Fatalf("full style: %#v, %v", got, err)
@@ -70,6 +76,7 @@ func TestEditorStyleConcurrentPatchesKeepAllFields(t *testing.T) {
 		{HighlightStroke: editorStylePointer(28.)},
 		{HighlightColor: editorStylePointer("#c94632")},
 		{ArrowStyle: editorStylePointer("direction")},
+		{RectangleFillStyle: editorStylePointer("tint")},
 		{NumberStyle: editorStylePointer("outline")},
 		{NumberRadius: editorStylePointer(40.)},
 		{RedactStyle: editorStylePointer("solid")},
@@ -102,7 +109,7 @@ func TestEditorStyleConcurrentPatchesKeepAllFields(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	want := EditorStyle{Color: "#123456", Stroke: 8, PenStroke: 10, HighlightStroke: 28, HighlightColor: "#c94632", ArrowStyle: "direction", NumberStyle: "outline", NumberRadius: 40, RedactStyle: "solid", RedactStrength: 18, TextSize: 36}
+	want := EditorStyle{Color: "#123456", Stroke: 8, PenStroke: 10, HighlightStroke: 28, HighlightColor: "#c94632", ArrowStyle: "direction", RectangleFillStyle: "tint", NumberStyle: "outline", NumberRadius: 40, RedactStyle: "solid", RedactStrength: 18, TextSize: 36}
 	if got := s.GetEditorStyle(); got != want {
 		t.Fatalf("concurrent patches replaced another control: %#v", got)
 	}
@@ -134,7 +141,7 @@ func TestEditorStyleRejectsInvalidPatchesWithoutChangingMemoryOrDisk(t *testing.
 		{HighlightStroke: editorStylePointer(.49)}, {HighlightStroke: editorStylePointer(201.)},
 		{Stroke: editorStylePointer(math.NaN())}, {PenStroke: editorStylePointer(math.Inf(1))},
 		{HighlightStroke: editorStylePointer(math.Inf(-1))},
-		{ArrowStyle: editorStylePointer("unknown")}, {NumberStyle: editorStylePointer("unknown")},
+		{ArrowStyle: editorStylePointer("unknown")}, {RectangleFillStyle: editorStylePointer("solid")}, {NumberStyle: editorStylePointer("unknown")},
 		{NumberRadius: editorStylePointer(11.)}, {NumberRadius: editorStylePointer(161.)},
 		{RedactStyle: editorStylePointer("unknown")},
 		{RedactStrength: editorStylePointer(3.)}, {RedactStrength: editorStylePointer(41.)},

@@ -32,6 +32,22 @@ test('pinned document round trip preserves editable source, crop and strokes', (
   assert.equal(d.annotations[0].points[0].x, 20);
 });
 
+test('rectangle fill survives editable document round trips and history', () => {
+  const rectangle = {id:'box',type:'rectangle',x:8,y:12,w:35,h:26,color:'#c94632',width:3};
+  const legacy = {...doc(),annotations:[rectangle]};
+  assert.deepEqual(parseDocument(serializeDocument(legacy)),legacy);
+  const history = new History(legacy);
+  for (const fillStyle of ['outline','tint','hatch']) {
+    const updated = {...legacy,annotations:[{...rectangle,fillStyle}]};
+    const reopened = parseDocument(serializeDocument(updated));
+    assert.deepEqual(reopened,updated);
+    history.push(reopened);
+  }
+  assert.equal(history.undo().annotations[0].fillStyle,'tint');
+  assert.equal(history.redo().annotations[0].fillStyle,'hatch');
+  assert.throws(() => serializeDocument({...legacy,annotations:[{...rectangle,fillStyle:'solid'}]}),/矩形填充样式无效/);
+});
+
 test('untrusted documents reject active URLs, excessive sizes, invalid crop and coordinates', () => {
   for (const change of [
     {base: 'javascript:alert(1)'},

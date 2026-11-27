@@ -38,15 +38,19 @@
   </nav>
   <div class="properties" aria-label="工具属性">
     <span id="tool-name">选择</span>
-    <div id="colors" class="colors" role="group" aria-label="标注颜色"></div>
-    <label id="stroke-label" class="stroke-label">粗细 <input id="stroke" aria-label="线条粗细" type="range" min="1" max="32" step="1" value="4"><output id="stroke-value">4</output></label>
+    <div id="rectangle-options" class="tool-options" hidden>
+      <div id="rectangle-style" class="segmented" role="group" aria-label="矩形样式">
+        <button data-value="outline" aria-label="边框" title="边框"><span data-icon="rectangle-outline"></span></button>
+        <button data-value="tint" aria-label="浅底色" title="浅底色"><span data-icon="rectangle-tint"></span></button>
+        <button data-value="hatch" aria-label="浅斜线" title="浅斜线"><span data-icon="rectangle-hatch"></span></button>
+      </div>
+      <span id="rectangle-style-label" class="option-value" aria-hidden="true">边框</span>
+    </div>
     <div id="number-options" class="tool-options" hidden>
       <div id="number-style" class="segmented" role="group" aria-label="编号圆点样式">
         <button data-value="filled" aria-label="实心编号" title="实心编号"><span class="number-sample filled">1</span></button>
         <button data-value="outline" aria-label="镂空编号" title="镂空编号"><span class="number-sample outline">1</span></button>
       </div>
-      <label>编号 <input id="number-value" aria-label="圆点编号" type="number" min="1" max="999" value="1"></label>
-      <label>大小 <input id="number-size" aria-label="编号圆点大小" type="range" min="12" max="160" step="1" value="16"></label>
     </div>
     <div id="arrow-options" class="tool-options" hidden>
       <div id="arrow-style" class="segmented" role="group" aria-label="箭头样式">
@@ -57,7 +61,6 @@
       </div>
       <span id="arrow-style-label" class="option-value">直线</span>
     </div>
-    <div id="text-options" class="tool-options" hidden><label>字号 <input id="font-size" aria-label="文字字号" type="number" min="8" max="512" value="24"></label><span class="text-instruction">点击画布输入 · 双击文字再编辑</span></div>
     <div id="redact-options" class="tool-options" hidden>
       <div id="redact-style" class="segmented" role="group" aria-label="遮盖样式">
         <button data-value="blur" aria-label="高斯模糊" title="高斯模糊"><span data-icon="blur"></span></button>
@@ -67,6 +70,11 @@
       <span id="redact-style-label" class="option-value">模糊</span>
       <label id="redact-strength-label">强度 <input id="redact-strength" aria-label="遮盖强度" type="range" min="4" max="40" value="12"><output id="redact-strength-value">12</output></label>
     </div>
+    <div id="number-value-options" class="tool-options" hidden><label>编号 <input id="number-value" aria-label="圆点编号" type="number" min="1" max="999" value="1"></label></div>
+    <div id="colors" class="colors" role="group" aria-label="标注颜色"></div>
+    <label id="stroke-label" class="stroke-label">粗细 <input id="stroke" aria-label="线条粗细" type="range" min="1" max="32" step="1" value="4"><output id="stroke-value">4</output></label>
+    <label id="number-size-label" class="stroke-label" hidden>大小 <input id="number-size" aria-label="编号圆点大小" type="range" min="12" max="160" step="1" value="16"><output id="number-size-value">16</output></label>
+    <div id="text-options" class="tool-options" hidden><label>字号 <input id="font-size" aria-label="文字字号" type="number" min="8" max="512" value="24"></label><span class="text-instruction">点击画布输入 · 双击文字再编辑</span></div>
     <div id="ocr-options" class="tool-options" hidden><span id="ocr-status">自动识别图片中的文字</span><button id="ocr-copy" class="subtle-action"><span data-icon="copy"></span><span id="ocr-copy-label">复制全部</span></button><span class="text-instruction">拖动划选文字 · ⌘C 复制</span></div>
     <button id="delete" class="text-button" hidden>删除标注 <kbd>⌫</kbd></button>
     <span id="tool-hint" class="tool-hint">拖动标注以调整位置</span>

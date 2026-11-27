@@ -11,33 +11,35 @@ import (
 )
 
 type EditorStyle struct {
-	Color           string  `json:"color"`
-	Stroke          float64 `json:"stroke"`
-	PenStroke       float64 `json:"penStroke"`
-	HighlightStroke float64 `json:"highlightStroke"`
-	HighlightColor  string  `json:"highlightColor"`
-	ArrowStyle      string  `json:"arrowStyle"`
-	NumberStyle     string  `json:"numberStyle"`
-	NumberRadius    float64 `json:"numberRadius"`
-	RedactStyle     string  `json:"redactStyle"`
-	RedactStrength  float64 `json:"redactStrength"`
-	TextSize        float64 `json:"textSize"`
+	Color              string  `json:"color"`
+	Stroke             float64 `json:"stroke"`
+	PenStroke          float64 `json:"penStroke"`
+	HighlightStroke    float64 `json:"highlightStroke"`
+	HighlightColor     string  `json:"highlightColor"`
+	ArrowStyle         string  `json:"arrowStyle"`
+	RectangleFillStyle string  `json:"rectangleFillStyle"`
+	NumberStyle        string  `json:"numberStyle"`
+	NumberRadius       float64 `json:"numberRadius"`
+	RedactStyle        string  `json:"redactStyle"`
+	RedactStrength     float64 `json:"redactStrength"`
+	TextSize           float64 `json:"textSize"`
 }
 
 // A window submits only the controls it changed, so another window's latest
 // values survive a save from an older editor snapshot.
 type EditorStylePatch struct {
-	Color           *string  `json:"color,omitempty"`
-	Stroke          *float64 `json:"stroke,omitempty"`
-	PenStroke       *float64 `json:"penStroke,omitempty"`
-	HighlightStroke *float64 `json:"highlightStroke,omitempty"`
-	HighlightColor  *string  `json:"highlightColor,omitempty"`
-	ArrowStyle      *string  `json:"arrowStyle,omitempty"`
-	NumberStyle     *string  `json:"numberStyle,omitempty"`
-	NumberRadius    *float64 `json:"numberRadius,omitempty"`
-	RedactStyle     *string  `json:"redactStyle,omitempty"`
-	RedactStrength  *float64 `json:"redactStrength,omitempty"`
-	TextSize        *float64 `json:"textSize,omitempty"`
+	Color              *string  `json:"color,omitempty"`
+	Stroke             *float64 `json:"stroke,omitempty"`
+	PenStroke          *float64 `json:"penStroke,omitempty"`
+	HighlightStroke    *float64 `json:"highlightStroke,omitempty"`
+	HighlightColor     *string  `json:"highlightColor,omitempty"`
+	ArrowStyle         *string  `json:"arrowStyle,omitempty"`
+	RectangleFillStyle *string  `json:"rectangleFillStyle,omitempty"`
+	NumberStyle        *string  `json:"numberStyle,omitempty"`
+	NumberRadius       *float64 `json:"numberRadius,omitempty"`
+	RedactStyle        *string  `json:"redactStyle,omitempty"`
+	RedactStrength     *float64 `json:"redactStrength,omitempty"`
+	TextSize           *float64 `json:"textSize,omitempty"`
 }
 
 type editorStyleState struct {
@@ -49,7 +51,7 @@ type editorStyleState struct {
 func defaultEditorStyle() EditorStyle {
 	return EditorStyle{
 		Color: "#c94632", Stroke: 4, PenStroke: 4, HighlightStroke: 20, HighlightColor: "#e6a32b",
-		ArrowStyle: "line", NumberStyle: "filled", NumberRadius: 16,
+		ArrowStyle: "line", RectangleFillStyle: "outline", NumberStyle: "filled", NumberRadius: 16,
 		RedactStyle: "blur", RedactStrength: 12, TextSize: 24,
 	}
 }
@@ -71,6 +73,11 @@ func validateEditorStyle(style EditorStyle) error {
 	case "line", "pointer", "curved", "tapered", "direction":
 	default:
 		return errors.New("箭头样式无效")
+	}
+	switch style.RectangleFillStyle {
+	case "outline", "tint", "hatch":
+	default:
+		return errors.New("矩形填充样式无效")
 	}
 	if style.NumberStyle != "filled" && style.NumberStyle != "outline" {
 		return errors.New("编号样式无效")
@@ -152,6 +159,9 @@ func (s *CaptureService) SetEditorStyle(patch EditorStylePatch) (EditorStyle, er
 	}
 	if patch.ArrowStyle != nil {
 		next.ArrowStyle = *patch.ArrowStyle
+	}
+	if patch.RectangleFillStyle != nil {
+		next.RectangleFillStyle = *patch.RectangleFillStyle
 	}
 	if patch.NumberStyle != nil {
 		next.NumberStyle = *patch.NumberStyle

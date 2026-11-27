@@ -1,4 +1,5 @@
 import type {Annotation, ArrowAnnotation, TextAnnotation, CiipDocument, Point, Rect, FrameLayout, FrameLayoutInput, CanvasContext, CanvasSurface, RenderOptions, SelectionHandle, Appearance} from './types.ts';
+import {rectangleFillStyles} from './types.ts';
 import {backgroundPresets, drawBackground, createSurface, surfaceContext, renderRedaction} from './effects.ts';
 export {backgroundPresets, drawBackground} from './effects.ts';
 
@@ -539,6 +540,34 @@ export function renderAnnotation(ctx: CanvasContext, a: Annotation) {
       ctx.fillRect(Math.floor(a.x), Math.floor(a.y), Math.ceil(a.x + a.w) - Math.floor(a.x), Math.ceil(a.y + a.h) - Math.floor(a.y));
     }
   } else if (a.type === 'rectangle') {
+    if (a.w > 0 && a.h > 0 && a.fillStyle === 'tint') {
+      ctx.globalAlpha = .16;
+      ctx.fillRect(a.x, a.y, a.w, a.h);
+      ctx.globalAlpha = 1;
+    } else if (a.w > 0 && a.h > 0 && a.fillStyle === 'hatch') {
+      const size = 12, tile = createSurface(size, size, ctx.canvas);
+      const stripe = surfaceContext(tile);
+      stripe.strokeStyle = ctx.strokeStyle;
+      stripe.lineWidth = 1;
+      // Continue the diagonal through opposite edges of the repeating tile.
+      stripe.beginPath();
+      stripe.moveTo(-1, size + 1);
+      stripe.lineTo(size + 1, -1);
+      stripe.moveTo(-1, 1);
+      stripe.lineTo(1, -1);
+      stripe.moveTo(size - 1, size + 1);
+      stripe.lineTo(size + 1, size - 1);
+      stripe.stroke();
+      const pattern = ctx.createPattern(tile, 'repeat');
+      if (pattern) {
+        ctx.save();
+        ctx.translate(a.x, a.y);
+        ctx.fillStyle = pattern;
+        ctx.globalAlpha = .22;
+        ctx.fillRect(0, 0, a.w, a.h);
+        ctx.restore();
+      }
+    }
     ctx.strokeRect(a.x, a.y, a.w, a.h);
   } else if (a.type === 'ellipse') {
     ctx.beginPath();
@@ -699,6 +728,7 @@ function validateDocument(input: unknown): CiipDocument {
       if (!finite(a.x,-1_000_000,1_000_000) || !finite(a.y,-1_000_000,1_000_000) || typeof a.text !== 'string' || a.text.length > 10_000 || !finite(a.fontSize||28,8,512)) throw new Error('文字标注无效');
     } else {
       if (!validRect(a)) throw new Error('标注范围无效');
+      if (a.type==='rectangle' && a.fillStyle!==undefined && !rectangleFillStyles.some(style=>style===a.fillStyle)) throw new Error('矩形填充样式无效');
       if (a.type==='redact' && ((a.style!=null && (typeof a.style !== 'string' || !['blur','pixelate','solid'].includes(a.style))) || (a.intensity!=null && !finite(a.intensity,4,40)))) throw new Error('模糊效果参数无效');
     }
   }

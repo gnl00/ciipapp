@@ -3,13 +3,18 @@ export interface Rect extends Point { w: number; h: number }
 export interface ScreenRect extends Point { width: number; height: number }
 export interface Size { width: number; height: number }
 export interface CaptureImage extends Size { dataURL: string; name: string }
+export const rectangleFillStyles = ['outline', 'tint', 'hatch'] as const;
+export type RectangleFillStyle = typeof rectangleFillStyles[number];
 export type ArrowStyle = 'line' | 'pointer' | 'curved' | 'tapered' | 'direction';
 export type NumberStyle = 'filled' | 'outline';
 export type RedactStyle = 'blur' | 'pixelate' | 'solid';
 export interface AnnotationBase { id: string; color: string; width: number; rotation?: number; flipX?: boolean; flipY?: boolean }
 export interface ArrowAnnotation extends AnnotationBase { type: 'arrow'; points: [Point, Point]; control?: Point; style?: ArrowStyle }
 export interface StrokeAnnotation extends AnnotationBase { type: 'pen' | 'highlighter'; points: Point[]; control?: undefined; style?: undefined }
-export interface BoxAnnotation extends AnnotationBase, Rect { type: 'rectangle' | 'ellipse'; points?: undefined; control?: undefined; style?: undefined }
+interface BoxAnnotationBase extends AnnotationBase, Rect { points?: undefined; control?: undefined; style?: undefined }
+export type BoxAnnotation = BoxAnnotationBase & (
+  {type: 'rectangle'; fillStyle?: RectangleFillStyle} | {type: 'ellipse'}
+);
 export interface RedactAnnotation extends AnnotationBase, Rect { type: 'redact'; style?: RedactStyle; intensity?: number; points?: undefined; control?: undefined }
 export interface TextAnnotation extends AnnotationBase, Point { type: 'text'; text: string; fontSize?: number; points?: undefined; control?: undefined; style?: undefined }
 export interface NumberAnnotation extends AnnotationBase, Point { type: 'number'; number: number; radius?: number; style?: NumberStyle; points?: undefined; control?: undefined }

@@ -34,6 +34,8 @@
 
 ## 几何与文字
 
+完整编辑器与快捷编辑器的矩形、编号、箭头和遮盖样式选择器均紧接工具名称，沿用属性栏的统一组间距。编号值位于样式选项与色板之间，编号的大小与通用粗细共用色板后的滑杆位置。
+
 间距使用 `--space-1` 至 `--space-8`：紧凑工具间隔、按钮内边距与内容区留白属于不同层级，不把所有空间压缩到同一个值。圆角使用 `--radius-control`、`--radius-selector`、`--radius-panel`、`--radius-toolbar` 与 `--radius-dialog`。圆形关闭按钮和编号圆点使用 `--radius-round`。
 
 `--font-ui` 跟随 macOS 系统字体；`--text-xs`、`--text-sm`、`--text-base` 和 `--text-title` 区分数字说明、辅助文字、正文与设置标题。12px 关闭图标使用 `--icon-sm`；外围 26px 操作区使用 `--control-sm`。百分比和数值启用等宽数字，工具文字禁止选择，OCR 与错误信息保留按需选择能力。

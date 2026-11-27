@@ -1,6 +1,6 @@
 import {errorMessage} from './native.ts';
 import type {NativeCall,NativeMethod,NativeResponses,CaptureImage,OCRResult,ShortcutStatus} from './native.ts';
-import type {Point,Rect,CiipDocument,Annotation,AnnotationType,TextAnnotation,ArrowAnnotation,Appearance,FrameLayout,SelectionHandle,ArrowStyle,NumberStyle,RedactStyle} from './types.ts';
+import type {Point,Rect,CiipDocument,Annotation,AnnotationType,TextAnnotation,ArrowAnnotation,Appearance,FrameLayout,SelectionHandle,ArrowStyle,NumberStyle,RectangleFillStyle,RedactStyle} from './types.ts';
 
 type Tool = AnnotationType|'select'|'crop'|'ocr';
 interface EditorGesture {
@@ -43,6 +43,12 @@ interface AppElements {
  'number-style':HTMLElement;
  'number-value':HTMLInputElement;
  'number-size':HTMLInputElement;
+ 'number-size-label':HTMLElement;
+ 'number-size-value':HTMLOutputElement;
+ 'number-value-options':HTMLElement;
+ 'rectangle-options':HTMLElement;
+ 'rectangle-style':HTMLElement;
+ 'rectangle-style-label':HTMLElement;
  'arrow-options':HTMLElement;
  'arrow-style':HTMLElement;
  'arrow-style-label':HTMLElement;
@@ -122,7 +128,12 @@ const paths:Record<string,string> = {
   pin:'m9 3 12 12M11 5l-5 6-3 1 9 9 1-3 6-5M8 16l-6 6',
   copy:'M9 8h11v13H9zM15 4V2H3v15h2',save:'M5 3h12l4 4v14H3V3zM7 3v6h10V3M7 21v-8h10v8',
 };
-function icon(name:string='capture') { if(name==='blur')return `<svg viewBox="0 0 24 24" aria-hidden="true"><defs><radialGradient id="ciip-blur-symbol"><stop stop-color="currentColor" stop-opacity=".8"/><stop offset=".5" stop-color="currentColor" stop-opacity=".42"/><stop offset="1" stop-color="currentColor" stop-opacity="0"/></radialGradient></defs><rect x="3.5" y="3.5" width="17" height="17" rx="4" fill="none" stroke="currentColor" stroke-opacity=".4" stroke-width="1.2"/><circle cx="12" cy="12" r="8" fill="url(#ciip-blur-symbol)"/></svg>`; return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="${paths[name] || paths.capture}"/></svg>`; }
+function icon(name:string='capture') {
+  if(name==='rectangle-outline'||name==='rectangle-tint'||name==='rectangle-hatch') {
+    const tint=name==='rectangle-tint', hatch=name==='rectangle-hatch';
+    return `<svg viewBox="0 0 22 22" fill="none" stroke="currentColor" aria-hidden="true"><rect x="4" y="5.5" width="14" height="11" rx="1" stroke-width="1.5"${tint?' fill="currentColor" fill-opacity=".42"':''}/>${hatch?'<path d="m4.5 11.5 5.5-5.5m-5 10 10-10m-5 10 7.5-7.5m-2.5 7.5 2.5-2.5" stroke-width="1.1"/>':''}</svg>`;
+  }
+  if(name==='blur')return `<svg viewBox="0 0 24 24" aria-hidden="true"><defs><radialGradient id="ciip-blur-symbol"><stop stop-color="currentColor" stop-opacity=".8"/><stop offset=".5" stop-color="currentColor" stop-opacity=".42"/><stop offset="1" stop-color="currentColor" stop-opacity="0"/></radialGradient></defs><rect x="3.5" y="3.5" width="17" height="17" rx="4" fill="none" stroke="currentColor" stroke-opacity=".4" stroke-width="1.2"/><circle cx="12" cy="12" r="8" fill="url(#ciip-blur-symbol)"/></svg>`; return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="${paths[name] || paths.capture}"/></svg>`; }
 document.querySelectorAll<HTMLElement>('[data-icon]').forEach(el => { el.innerHTML = icon(el.dataset.icon); });
 const toolList:[Tool,string,string,string][] = [
   ['select','选择','V','拖动标注以调整位置'],['arrow','箭头','A','拖动绘制箭头 · Shift 锁定方向'],
@@ -136,6 +147,7 @@ $('colors').innerHTML = palette.map(color => `<button aria-label="颜色 ${color
 
 let doc:CiipDocument|null = null, source:HTMLImageElement|null = null, history:History|null = null, selected:string|null = null, tool:Tool = 'select';
 let color = palette[0], stroke = 4, scale = 1, autoFit = true, dirty = false, pinID = '';
+let rectangleFillStyle:RectangleFillStyle = 'outline';
 let arrowStyle:ArrowStyle = 'line', numberStyle:NumberStyle = 'filled', numberRadius = 16, numberOverride:number|null = null;
 let redactStyle:RedactStyle='blur', redactStrength=12, penStroke=4, highlightStroke=20;
 let ocrResult:OCRResult|null=null, ocrKey='', ocrGeneration=0;
@@ -344,6 +356,10 @@ function updateUI() {
   const kind=textEdit?'text':active?.type||tool;
   $('stroke-label').hidden=['text','number','redact','ocr','crop'].includes(kind);
   $('colors').hidden=['ocr','crop'].includes(kind)||(kind==='redact'&&(active?.style||redactStyle)!=='solid');
+  $('rectangle-options').hidden=kind!=='rectangle';
+  const rectangleValue=active?.type==='rectangle'?active.fillStyle??'outline':rectangleFillStyle;
+  segmentValue('rectangle-style',rectangleValue);
+  $('rectangle-style-label').textContent=({outline:'边框',tint:'浅底色',hatch:'浅斜线'})[rectangleValue];
   $('redact-options').hidden=kind!=='redact';
   const cover=active?.type==='redact'?active.style||'solid':redactStyle;
   segmentValue('redact-style',cover);
@@ -363,7 +379,7 @@ function updateUI() {
   });
   if(document.activeElement!==$('font-size'))$('font-size').value=String(textEdit?.draft.fontSize ?? (active?.type==='text'?active.fontSize??28:textSize));
   $('arrow-options').hidden=tool!=='arrow' && active?.type!=='arrow';
-  $('number-options').hidden=tool!=='number' && active?.type!=='number';
+  $('number-options').hidden=$('number-size-label').hidden=$('number-value-options').hidden=kind!=='number';
   const arrowValue=active?.type==='arrow'?active.style||'line':arrowStyle;
   segmentValue('arrow-style',arrowValue==='pointer'?'line':arrowValue);
   segmentValue('number-style',active?.type==='number'?active.style||'filled':numberStyle);
@@ -404,7 +420,7 @@ function setTool(next:Tool) {
 }
 function restoreEditorStyle(next:Tool) {
   const style=editorStyles.snapshot();
-  ({color,penStroke,highlightStroke,arrowStyle,numberStyle,numberRadius,redactStyle,redactStrength,textSize}=style);
+  ({color,penStroke,highlightStroke,arrowStyle,rectangleFillStyle,numberStyle,numberRadius,redactStyle,redactStrength,textSize}=style);
   stroke=next==='pen'?penStroke:next==='highlighter'?highlightStroke:style.stroke;
   if(next==='highlighter')color=style.highlightColor;
 }
@@ -450,7 +466,9 @@ function newAnnotation(start:Point):Annotation {
   if (tool==='arrow') return {...common,type:'arrow',points:[start,start],style:arrowStyle};
   if (tool==='pen'||tool==='highlighter') return {...common,type:tool,points:[start,start]};
   if (tool==='redact')return {...common,type:'redact',x:start.x,y:start.y,w:0,h:0,style:redactStyle,intensity:redactStrength};
-  return {...common,type:tool as 'rectangle'|'ellipse',x:start.x,y:start.y,w:0,h:0};
+  const box={...common,x:start.x,y:start.y,w:0,h:0};
+  if(tool==='rectangle')return {...box,type:'rectangle',fillStyle:rectangleFillStyle};
+  return {...box,type:'ellipse'};
 }
 const handleNames:Record<string,string>={nw:'左上角缩放',n:'上边缩放',ne:'右上角缩放',e:'右边缩放',se:'右下角缩放',s:'下边缩放',sw:'左下角缩放',w:'左边缩放',start:'箭头起点',end:'箭头终点',curve:'箭头弯曲控制点'};
 function activeHandles(annotation:Annotation):SelectionHandle[] {
@@ -766,8 +784,15 @@ $('stroke').onchange=()=>{if(busy)return;stroke=Number($('stroke').value);rememb
 bindSegments<RedactStyle>('redact-style',value=>{redactStyle=value;editorStyles.update({redactStyle});updateAnnotationOption('redact',{style:value});});
 $('redact-strength').oninput=updateRanges;
 $('redact-strength').onchange=()=>{if(busy)return;redactStrength=Number($('redact-strength').value);editorStyles.update({redactStrength});updateAnnotationOption('redact',{intensity:redactStrength});};
+bindSegments<RectangleFillStyle>('rectangle-style',value=>{
+  const active=doc?.annotations.find(a=>a.id===selected);
+  rectangleFillStyle=value;
+  editorStyles.update({rectangleFillStyle});
+  if(active?.type!=='rectangle'||(active.fillStyle??'outline')!==value)updateAnnotationOption('rectangle',{fillStyle:value});
+});
 bindSegments<ArrowStyle>('arrow-style',value=>{arrowStyle=value;editorStyles.update({arrowStyle});updateAnnotationOption('arrow',{style:value});});
 bindSegments<NumberStyle>('number-style',value=>{numberStyle=value;editorStyles.update({numberStyle});updateAnnotationOption('number',{style:value});});
+$('number-size').oninput=updateRanges;
 $('number-size').onchange=()=>{
   if(busy)return;
   const radius=Number($('number-size').value);
@@ -882,7 +907,7 @@ function updateRanges() {
     const percent=(Number(input.value)-Number(input.min))/(Number(input.max)-Number(input.min))*100;
     input.style.setProperty('--range-progress',`${percent}%`);
   });
-  for(const [input,output] of ([['stroke','stroke-value'],['redact-strength','redact-strength-value'],['background-padding','padding-value'],['image-radius','radius-value']] as const))$(output).value=$(input).value;
+  for(const [input,output] of ([['stroke','stroke-value'],['number-size','number-size-value'],['redact-strength','redact-strength-value'],['background-padding','padding-value'],['image-radius','radius-value']] as const))$(output).value=$(input).value;
 }
 function initializeAppearance() {
   for(const preset of backgroundPresets) {
